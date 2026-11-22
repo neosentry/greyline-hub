@@ -1,0 +1,13 @@
+{
+  "primary_url": "http://greyline.local:8754/",
+  "secondary_url": "http://127.0.0.1:8754/",
+  "connect_timeout_sec": 1.5,
+  "local_server": {
+    "enabled": true,
+    "python": "/usr/bin/python3",
+    "working_directory": "/Users/YOU/greyline-hub",
+    "port": 8754,
+    "config": "",
+    "start_timeout_sec": 12
+  }
+}

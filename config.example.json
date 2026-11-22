@@ -1,0 +1,97 @@
+{
+  // Copy this file to config.json and edit it. Comments are allowed.
+  // Greyline Hub reads config.json in the working directory, then next to the
+  // install, unless GREYLINE_CONFIG or --config points somewhere else.
+
+  "station": {
+    "callsign": "N0CALL",
+    "grid": "FN31pr",
+    // latitude/longitude override the grid when both are set.
+    // longitude is positive east.
+    "latitude": null,
+    "longitude": null,
+    "timezone": "America/New_York"
+  },
+
+  // Built-in server. Change the port if another program already has it.
+  // Set enabled to false when you only want files written for an existing
+  // web server (nginx, Caddy, Apache, lighttpd) to serve.
+  "server": {
+    "enabled": true,
+    "host": "0.0.0.0",
+    "port": 8754,
+    // Mount prefix when a reverse proxy forwards the full path.
+    // Leave empty when the proxy strips the prefix, or when clients open
+    // http://host:8754/ directly.
+    "base_path": ""
+  },
+
+  // Folder mode. Point this at a dedicated directory already inside your
+  // web root, for example /var/www/html/greyline. No extra port is opened
+  // when server.enabled is false. The folder must not already contain some
+  // other site's index.html.
+  "publish": {
+    "enabled": false,
+    "directory": "/var/www/html/greyline",
+    "status_interval_sec": 15
+  },
+
+  // Each page is one screensaver URL. slug "" is the site root.
+  // Other slugs are published at /<slug>/.
+  // panels: clock, map, space_weather, bands, dx_spots
+  "pages": [
+    {
+      "id": "main",
+      "title": "Shack",
+      "slug": "",
+      "panels": ["clock", "map", "space_weather", "bands", "dx_spots"],
+      "dx_rows": 10,
+      "show_vhf": true,
+      "map": {
+        "spots": true,
+        "labels": true,
+        "greyline": true,
+        "home": true,
+        "sun": true,
+        "graticule": true
+      },
+      "burn_in": { "enabled": true, "period_sec": 180, "pixels": 8 }
+    },
+    {
+      "id": "map",
+      "title": "Map",
+      "slug": "map",
+      "panels": ["clock", "map", "dx_spots"],
+      "dx_rows": 8,
+      "show_vhf": false,
+      "map": { "labels": true, "spots": true, "greyline": true },
+      "burn_in": { "enabled": true, "period_sec": 240, "pixels": 10 }
+    }
+  ],
+
+  // Names you use for the screens. Shown on the /pages/ index so you can
+  // see which URL to paste into each screensaver. The client itself only
+  // needs the URL.
+  "clients": [
+    { "name": "shack-display", "page": "main" },
+    { "name": "laptop", "page": "map" }
+  ],
+
+  "feeds": {
+    "timeout_sec": 12,
+    "space_weather_sec": 300,
+    "bands_sec": 600,
+    "dx_sec": 60,
+    "dx_url": "https://www.dxsummit.fi/api/v1/spots?limit=40",
+    // DX Summit longitudes are positive west, same as cty.dat.
+    "dx_longitude": "west-positive",
+    "dx_max_age_min": 90,
+    "dx_max_spots": 60,
+    // Optional direct cluster. Leave disabled to use DX Summit only.
+    // Login should be your real callsign; blank uses station.callsign.
+    "telnet_enabled": false,
+    "telnet_host": "dxc.nc7j.com",
+    "telnet_port": 7373,
+    "telnet_login": ""
+  }
+}

@@ -78,8 +78,8 @@ private final class LocalSiteHandler: NSObject, WKURLSchemeHandler {
     }
 }
 
-private enum SaverLog {
-    static let logger = Logger(subsystem: saverSubsystem, category: "saver")
+enum SaverLog {
+    private static let unified = OSLog(subsystem: saverSubsystem, category: "saver")
     private static let queue = DispatchQueue(label: "com.greylinehub.screensaver.log")
     private static var fileURL: URL?
 
@@ -89,14 +89,16 @@ private enum SaverLog {
 
     static func write(_ message: String) {
         let stamp = ISO8601DateFormatter().string(from: Date())
+        // The word "greyline" is literal so a case-sensitive grep finds it.
+        // .error is recorded at the default log level. %{public}@ keeps the
+        // text from being redacted as <private>.
         let line = "\(stamp) \(message)"
-        // .default plus an explicit public string. A plain `log stream` hides
-        // info-level and redacts interpolated text, which is why 0.1.2 looked silent.
-        logger.log("\(line, privacy: .public)")
-        os_log("%{public}@", log: .default, type: .default, line)
+        os_log("greyline %{public}@", log: unified, type: .error, line)
+        os_log("greyline %{public}@", log: .default, type: .error, line)
+        NSLog("%@", "greyline \(line)")
         queue.async {
             let url = resolvedURL()
-            let payload = Data((line + "\n").utf8)
+            let payload = Data(("greyline \(line)\n").utf8)
             if FileManager.default.fileExists(atPath: url.path),
                let handle = try? FileHandle(forWritingTo: url) {
                 _ = try? handle.seekToEnd()
@@ -151,12 +153,15 @@ private struct ClientConfig: Codable {
     var port: Int
     var configPath: String
     var startTimeoutSec: Double
+    /// "native" draws in this view. "webkit" is the old page, which macOS 26 and 27 blank.
+    var renderer: String
 
     enum CodingKeys: String, CodingKey {
         case primaryURL = "primary_url"
         case secondaryURL = "secondary_url"
         case connectTimeoutSec = "connect_timeout_sec"
         case localServer = "local_server"
+        case renderer
     }
 
     enum LocalKeys: String, CodingKey {
@@ -178,7 +183,8 @@ private struct ClientConfig: Codable {
         workingDirectory: "",
         port: 8754,
         configPath: "",
-        startTimeoutSec: 12
+        startTimeoutSec: 12,
+        renderer: "native"
     )
 
     init(
@@ -190,7 +196,8 @@ private struct ClientConfig: Codable {
         workingDirectory: String,
         port: Int,
         configPath: String,
-        startTimeoutSec: Double
+        startTimeoutSec: Double,
+        renderer: String
     ) {
         self.primaryURL = primaryURL
         self.secondaryURL = secondaryURL
@@ -201,6 +208,7 @@ private struct ClientConfig: Codable {
         self.port = port
         self.configPath = configPath
         self.startTimeoutSec = startTimeoutSec
+        self.renderer = renderer
     }
 
     init(from decoder: Decoder) throws {
@@ -215,6 +223,7 @@ private struct ClientConfig: Codable {
         port = base.port
         configPath = base.configPath
         startTimeoutSec = base.startTimeoutSec
+        renderer = try box.decodeIfPresent(String.self, forKey: .renderer) ?? base.renderer
         if box.contains(.localServer) {
             let local = try box.nestedContainer(keyedBy: LocalKeys.self, forKey: .localServer)
             localServerEnabled = try local.decodeIfPresent(Bool.self, forKey: .enabled) ?? localServerEnabled
@@ -238,6 +247,7 @@ private struct ClientConfig: Codable {
         try local.encode(port, forKey: .port)
         try local.encode(configPath, forKey: .config)
         try local.encode(startTimeoutSec, forKey: .startTimeoutSec)
+        try box.encode(renderer, forKey: .renderer)
     }
 }
 
@@ -292,6 +302,9 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
     private var directoryField: NSTextField?
     private var portField: NSTextField?
     private var launchCheckbox: NSButton?
+    private var webkitCheckbox: NSButton?
+    private let nativeBoard = NativeDashboard()
+    private var useNative = true
     private var generation = 0
     private var statusLines: [String] = []
     private var sawContent = false
@@ -307,14 +320,16 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
         super.init(frame: frame, isPreview: isPreview)
         SaverLog.write("init super.init returned")
         animationTimeInterval = 1
-        configureLayer()
-        installStatusLabel()
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(sharedFrameChanged),
-            name: .greylineFrame,
-            object: nil
-        )
+        config = loadConfig()
+        useNative = config.renderer != "webkit"
+        if useNative {
+            wantsLayer = false
+            SaverLog.write("init native \(bundleVersion())")
+        } else {
+            configureLayer()
+            installStatusLabel()
+            NotificationCenter.default.addObserver(self, selector: #selector(sharedFrameChanged), name: .greylineFrame, object: nil)
+        }
         SaverLog.write("init done")
     }
 
@@ -324,20 +339,27 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
         super.init(coder: decoder)
         SaverLog.write("init(coder:) super.init returned")
         animationTimeInterval = 1
-        configureLayer()
-        installStatusLabel()
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(sharedFrameChanged),
-            name: .greylineFrame,
-            object: nil
-        )
+        config = loadConfig()
+        useNative = config.renderer != "webkit"
+        if useNative {
+            wantsLayer = false
+            SaverLog.write("init native \(bundleVersion())")
+        } else {
+            configureLayer()
+            installStatusLabel()
+            NotificationCenter.default.addObserver(self, selector: #selector(sharedFrameChanged), name: .greylineFrame, object: nil)
+        }
         SaverLog.write("init(coder:) done")
     }
 
     /// Paint the last good page bitmap ourselves. WebKit's own layers are
     /// marked volatile by legacyScreenSaver and go clear after about a second.
     override func draw(_ rect: NSRect) {
+        if useNative {
+            wantsLayer = false
+            nativeBoard.draw(in: bounds)
+            return
+        }
         let image = PageHost.shared.image ?? lastGoodImage
         guard let image else { return }
         image.draw(in: bounds, from: .zero, operation: .copy, fraction: 1)
@@ -349,15 +371,33 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
         log("start macOS \(version.majorVersion).\(version.minorVersion).\(version.patchVersion) preview=\(isPreviewMode) bundle=\(bundleVersion()) frame=\(Int(bounds.width))x\(Int(bounds.height))")
         log("log file \(SaverLog.filePath())")
         didTryAdoptSize = false
+        config = loadConfig()
+        useNative = config.renderer != "webkit"
+        if useNative {
+            wantsLayer = false
+            log("native dashboard \(bundleVersion()) preview=\(isPreviewMode) frame=\(Int(bounds.width))x\(Int(bounds.height)) no WebKit")
+            nativeBoard.configure(mapOnly: isMapURL(config.primaryURL), version: bundleVersion())
+            nativeBoard.reload(force: true)
+            needsDisplay = true
+            return
+        }
+        if statusLabel == nil {
+            configureLayer()
+            installStatusLabel()
+        }
         adoptScreenSizeIfNeeded()
         layoutChrome()
-        config = loadConfig()
         showStatus("Log: \(SaverLog.filePath())")
         PageHost.shared.clients.insert(ObjectIdentifier(self))
         resolveAndLoad()
     }
 
     override func stopAnimation() {
+        if useNative {
+            log("native stop")
+            super.stopAnimation()
+            return
+        }
         generation += 1
         let remaining = PageHost.shared.clients
         PageHost.shared.clients.remove(ObjectIdentifier(self))
@@ -388,6 +428,11 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
     }
 
     override func animateOneFrame() {
+        if useNative {
+            nativeBoard.reload(force: false)
+            needsDisplay = true
+            return
+        }
         if webView == nil {
             if let image = PageHost.shared.image {
                 lastGoodImage = image
@@ -431,16 +476,22 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
 
     override func layout() {
         super.layout()
+        guard !useNative else { return }
         layoutChrome()
     }
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
+        guard !useNative else {
+            needsDisplay = true
+            return
+        }
         layoutChrome()
     }
 
     override func resizeSubviews(withOldSize oldSize: NSSize) {
         super.resizeSubviews(withOldSize: oldSize)
+        guard !useNative else { return }
         layoutChrome()
     }
 
@@ -454,6 +505,7 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
         directoryField?.stringValue = current.workingDirectory
         portField?.stringValue = String(current.port)
         launchCheckbox?.state = current.localServerEnabled ? .on : .off
+        webkitCheckbox?.state = current.renderer == "webkit" ? .on : .off
         return sheet
     }
 
@@ -465,7 +517,7 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
         layer?.backgroundColor = NSColor(srgbRed: 0.03, green: 0.04, blue: 0.05, alpha: 1).cgColor
     }
 
-    override var isOpaque: Bool { false }
+    override var isOpaque: Bool { useNative }
 
     private func installStatusLabel() {
         statusLabel = NSTextField(wrappingLabelWithString: "")
@@ -508,6 +560,7 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
     }
 
     private func layoutChrome() {
+        guard !useNative, statusLabel != nil else { return }
         adoptScreenSizeIfNeeded()
         let frame = webViewTargetFrame()
         if PageHost.shared.image != nil, let webView {
@@ -994,6 +1047,12 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
         SaverLog.write(message)
     }
 
+    private func isMapURL(_ urlString: String) -> Bool {
+        let path = URL(string: urlString)?.path ?? urlString
+        let trimmed = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return trimmed == "map" || trimmed.hasSuffix("/map")
+    }
+
     private func pageDescription(_ urlString: String) -> String {
         let path = URL(string: urlString)?.path ?? "/"
         let trimmed = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -1150,11 +1209,10 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
         content.addSubview(checkbox)
         launchCheckbox = checkbox
 
-        let hint = NSTextField(wrappingLabelWithString: "A blank screen is a WebKit suspension. Status text stays on screen, and the log is listed there.")
-        hint.frame = NSRect(x: 20, y: 48, width: 520, height: 28)
-        hint.textColor = .secondaryLabelColor
-        hint.font = NSFont.systemFont(ofSize: 11)
-        content.addSubview(hint)
+        let webkit = NSButton(checkboxWithTitle: "Use WebKit. Leave this off — that view goes blank on macOS 26 and 27.", target: nil, action: nil)
+        webkit.frame = NSRect(x: 20, y: 48, width: 520, height: 22)
+        content.addSubview(webkit)
+        webkitCheckbox = webkit
 
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelSheet))
         cancel.frame = NSRect(x: 350, y: 12, width: 90, height: 28)
@@ -1179,10 +1237,27 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
             next.port = port
         }
         next.localServerEnabled = launchCheckbox?.state == .on
+        next.renderer = webkitCheckbox?.state == .on ? "webkit" : "native"
         saveConfig(next)
         config = next
+        useNative = next.renderer != "webkit"
         endSheet()
-        resolveAndLoad()
+        if useNative {
+            webView?.removeFromSuperview()
+            webView = nil
+            wantsLayer = false
+            statusLabel?.isHidden = true
+            snapshotView?.isHidden = true
+            nativeBoard.configure(mapOnly: isMapURL(next.primaryURL), version: bundleVersion())
+            nativeBoard.reload(force: true)
+            needsDisplay = true
+        } else {
+            if statusLabel == nil {
+                configureLayer()
+                installStatusLabel()
+            }
+            resolveAndLoad()
+        }
     }
 
     private func endSheet() {

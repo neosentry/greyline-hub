@@ -11,5 +11,6 @@
     "port": 8754,
     "config": "",
     "start_timeout_sec": 12
-  }
+  },
+  "renderer": "native"
 }

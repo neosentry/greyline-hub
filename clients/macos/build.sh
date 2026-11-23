@@ -87,6 +87,7 @@ build_arch() {
     -Xlinker -rpath -Xlinker /usr/lib/swift \
     -Xlinker -rpath -Xlinker @loader_path/../Frameworks \
     -o "$out" \
+    Sources/GreylineHubNative.swift \
     Sources/GreylineHubView.swift \
     "$obj"
   then

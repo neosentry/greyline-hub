@@ -61,3 +61,27 @@ sw_vers 2>/dev/null || true
 echo "If lipo does not list the same architecture as uname -m, the saver cannot load."
 echo "If otool shows @rpath/libswift*.dylib and that path is not on the saver, dyld fails before any log line."
 echo "A constructor log in /tmp/GreylineHub-saver.log means the binary did load."
+
+section "unified log (last 5 minutes)"
+echo "Lines from subsystem com.greylinehub.screensaver, plus any message containing greyline."
+if command -v log >/dev/null 2>&1; then
+  log show --last 5m --style compact \
+    --predicate 'subsystem == "com.greylinehub.screensaver" OR eventMessage CONTAINS[c] "greyline"' \
+    2>&1 | tail -n 250
+else
+  echo "log(1) is not available"
+fi
+
+section "saver log files"
+for f in \
+  "${HOME}/Library/Logs/GreylineHub-saver.log" \
+  "${HOME}/Library/Containers/com.apple.ScreenSaver.Engine.legacyScreenSaver/Data/Library/Logs/GreylineHub-saver.log" \
+  /tmp/GreylineHub-saver.log
+do
+  if [ -f "$f" ]; then
+    echo "-- $f --"
+    tail -n 40 "$f"
+  else
+    echo "missing $f"
+  fi
+done

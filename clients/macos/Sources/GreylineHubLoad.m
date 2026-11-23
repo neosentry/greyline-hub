@@ -24,8 +24,9 @@ static void greyline_append(const char *path, const char *message) {
 
 static void greyline_note(const char *message) {
     os_log_t log = os_log_create("com.greylinehub.screensaver", "load");
-    os_log(log, "GreylineHub: %{public}s", message);
-    os_log(OS_LOG_DEFAULT, "GreylineHub: %{public}s", message);
+    os_log_error(log, "greyline %{public}s", message);
+    os_log_error(OS_LOG_DEFAULT, "greyline %{public}s", message);
+    NSLog(@"greyline %s", message);
     NSString *container = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Logs"];
     [[NSFileManager defaultManager] createDirectoryAtPath:container
                               withIntermediateDirectories:YES

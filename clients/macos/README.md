@@ -1,7 +1,10 @@
 # Greyline Hub for macOS
 
-A `ScreenSaverView` with a `WKWebView`. It tries the home server, then a page
-on this Mac, and can start the local Python server if localhost is down.
+A `ScreenSaverView` that draws the shack dashboard itself: map, greyline,
+clocks, space weather, HF bands, and DX spots. It reads
+`~/Library/Screen Savers/GreylineHub-site/data/status.json`, which the Python
+server publishes. It does not open a web view unless Screen Saver options
+turn WebKit on.
 
 The Python server was exercised on Linux. The `.saver` itself has to be built
 on a Mac. It is written for the legacy screen saver host used by macOS 14
@@ -17,6 +20,8 @@ A fresh install opens the **shack page**, the site root:
 That page is the clock, the greyline map, space weather (SFI, SSN, Kp, A,
 X-ray, solar wind, Bz, NOAA R/S/G), HF band conditions, and DX spots. On a
 full screen the space-weather figures are drawn larger than in a small window.
+The native saver uses the URL only to choose the shack page or `/map/`. The
+picture is drawn from `GreylineHub-site/data/status.json`, not from WebKit.
 
 To change the page, edit the URL in Screen Saver options, or in
 `~/Library/Application Support/GreylineHub/client.json` (the sandbox may put
@@ -41,12 +46,13 @@ xattr -dr com.apple.quarantine ~/Library/Screen\ Savers/GreylineHub.saver
 ```
 
 `./diagnose.sh` prints the principal class, architectures, linked Swift
-libraries, and the code signature. Paste that output if the screen stays
-blank and no log file appears.
+libraries, the code signature, and the last few minutes of unified-log lines
+for `com.greylinehub.screensaver`. Paste that output if the screen stays
+blank.
 
 Open System Settings → Wallpaper → Screen Saver (on macOS 26 and 27 the
 screen saver list lives inside Wallpaper) and choose Greyline Hub. This build
-is version 0.1.6 (bundle version 7). The first line on screen is that version. `./build.sh` needs Xcode or the Command
+is version 0.1.7 (bundle version 8). The footer on screen says `Greyline Hub 0.1.7 (8) · native`. `./build.sh` needs Xcode or the Command
 Line Tools. The deployment target is macOS 14, so the same binary runs on
 Sonoma and later.
 
@@ -55,33 +61,26 @@ That is a macOS 26 bug in the screen saver UI, not in this bundle.
 
 ## If the screen goes black
 
-On macOS 26.4 and later, `legacyScreenSaver` treats a web view as a hidden
-background view. The dashboard paints, then WebKit suspends it and the
-display goes black. This build asks WebKit to leave the view active, drives
-the clock from the saver's own timer, and keeps a native status line on top
-of the web view. The status line is AppKit text, so it stays readable when
-the web view is empty. It says what it is trying:
+0.1.6 still went blank. The host log showed `hideContentUntilPendingUpdate`
+on the WebKit layer tree, and none of the saver's own log lines were present.
+0.1.7 does not create a `WKWebView` on the normal path. `draw` paints the
+dashboard with Core Graphics, including a greyline computed in the saver from
+the current time. The published JSON supplies the station, space weather
+(SFI, SSN, Kp, A, X-ray, wind, Bz, NOAA scales), band table, and DX spots.
+If that file is missing, the clocks, the Florida station, and the greyline
+still draw, and the footer says the site was not found.
 
-```
-Greyline Hub 0.1.6 (7)
-Trying home server http://greyline.local:8754/
-Shack page: space weather, HF bands, map, and spots.
-Home server did not answer: The request timed out.
-Trying this Mac http://127.0.0.1:8754/
-```
+The footer should read `Greyline Hub 0.1.7 (8) · native`. If it does not, the
+running host is still an older bundle. `legacyScreenSaver` keeps the previous
+binary mapped until that process exits. Quit System Settings and kill
+`legacyScreenSaver` before copying the new bundle.
 
-The version is always the first line, including while the dashboard is up
-only if the page has not drawn yet. Once the shack page is drawing, the text
-hides so the dashboard can fill the screen. A failure brings the text back
-and leaves it there.
-
-If the first line is not `Greyline Hub 0.1.6 (7)`, the running host is still
-an older bundle. `legacyScreenSaver` keeps the previous binary mapped until
-that process exits. The first log line is `constructor: GreylineHub image mapped`.
-`log stream` only shows it if you ask for public default messages:
+Logs use `os_log` with subsystem `com.greylinehub.screensaver` and a public
+`%{public}@` string that begins with `greyline`. `./diagnose.sh` prints the
+recent ones. A live stream:
 
 ```bash
-log stream --predicate 'eventMessage CONTAINS "GreylineHub"' --level debug
+log stream --predicate 'subsystem == "com.greylinehub.screensaver" OR eventMessage CONTAINS "greyline"' --level debug
 ```
 
 The file is written under the screen saver container, which `NSHomeDirectory()`
@@ -91,14 +90,9 @@ returns inside the sandbox:
 ls -l ~/Library/Containers/com.apple.ScreenSaver.Engine.legacyScreenSaver/Data/Library/Logs/GreylineHub-saver.log
 ```
 
-0.1.6 keeps a single web view. The 0.1.5 log showed two WebContent processes,
-then `PrepareToSuspend` and `markAllLayersVolatile` about 2.5 seconds after
-load, which is the screen going blank. The saver now copies each good frame
-into an image and draws that image itself, so a suspended WebKit layer is
-not what you see. It still tries the occlusion workaround, and keeps taking
-snapshots so a later frame can replace the held one.
-
-The sandbox also blocks HTTP, including `127.0.0.1`. Both probes timing out
+WebKit remains available only if Screen Saver options check "Use WebKit",
+or `client.json` sets `"renderer": "webkit"`. Leave that off. The sandbox also
+blocks HTTP, including `127.0.0.1`. Both probes timing out
 at the same budget with zero bytes sent is that restriction, not a slow
 server. The saver reads the shack page from
 `~/Library/Screen Savers/GreylineHub-site`. That directory sits next to the

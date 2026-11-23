@@ -11,7 +11,7 @@ if ! command -v xcrun >/dev/null 2>&1 || ! command -v swiftc >/dev/null 2>&1; th
 fi
 
 SDK="$(xcrun --sdk macosx --show-sdk-path)"
-MIN="12.0"
+MIN="14.0"
 ROOT="build/GreylineHub.saver/Contents"
 TMP="build/objs"
 rm -rf build

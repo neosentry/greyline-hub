@@ -1,25 +1,80 @@
 import Cocoa
 import Darwin
+import ObjectiveC
+import os
 import ScreenSaver
 import WebKit
 
-/// Full-screen Greyline Hub page.
+/// Screen saver for Greyline Hub.
 ///
-/// The view does not draw the dashboard itself. It opens one page URL:
-///
-/// 1. Probe the primary URL (the home server) with a short timeout.
-/// 2. Probe the secondary URL (usually localhost).
-/// 3. If that is down and a local server is configured, start
-///    `python3 -m greyline_hub` in the repo directory and poll again.
-///
-/// Which panels appear is decided by the page in the server config, not here.
-/// See clients/README.md for the contract a Windows or Linux port should follow.
-///
-/// On macOS Sonoma and later, screen savers run in a sandbox that may refuse
-/// to launch Python or to read an arbitrary directory. When that happens the
-/// view shows the error instead of a blank screen. The reliable fix is the
-/// LaunchAgent installed by install-local-server.sh, which keeps localhost up
-/// before the saver starts.
+/// legacyScreenSaver (the host on macOS Sonoma through macOS 27) treats a
+/// WKWebView as a hidden, occluded view. The page paints once, then WebContent
+/// is suspended and the screen goes black. This view tells WebKit not to do
+/// that, keeps a native status line in front of the web view until the shack
+/// page is actually drawing, and writes a log the user can send back.
+
+private let saverSubsystem = "com.greylinehub.screensaver"
+
+private final class TickFlag {
+    var value = false
+}
+
+private enum SaverLog {
+    static let logger = Logger(subsystem: saverSubsystem, category: "saver")
+    private static let queue = DispatchQueue(label: "com.greylinehub.screensaver.log")
+    private static var fileURL: URL?
+
+    static func filePath() -> String {
+        queue.sync { resolvedURL().path }
+    }
+
+    static func write(_ message: String) {
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        let line = "\(stamp) \(message)"
+        logger.log("\(line, privacy: .public)")
+        queue.async {
+            let url = resolvedURL()
+            let payload = Data((line + "\n").utf8)
+            if FileManager.default.fileExists(atPath: url.path),
+               let handle = try? FileHandle(forWritingTo: url) {
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: payload)
+                try? handle.close()
+            } else {
+                try? payload.write(to: url)
+            }
+        }
+    }
+
+    private static func resolvedURL() -> URL {
+        if let fileURL { return fileURL }
+        let name = "GreylineHub-saver.log"
+        let candidates = logCandidates(named: name)
+        for url in candidates {
+            let directory = url.deletingLastPathComponent()
+            if (try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)) != nil {
+                fileURL = url
+                return url
+            }
+        }
+        let fallback = URL(fileURLWithPath: "/tmp").appendingPathComponent(name)
+        fileURL = fallback
+        return fallback
+    }
+
+    private static func logCandidates(named name: String) -> [URL] {
+        var urls: [URL] = []
+        if let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first {
+            urls.append(library.appendingPathComponent("Logs", isDirectory: true).appendingPathComponent(name))
+        }
+        let home = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+        urls.append(home.appendingPathComponent("Library/Logs", isDirectory: true).appendingPathComponent(name))
+        urls.append(home
+            .appendingPathComponent("Library/Containers/com.apple.ScreenSaver.Engine.legacyScreenSaver/Data/Library/Logs", isDirectory: true)
+            .appendingPathComponent(name))
+        return urls
+    }
+}
 
 private struct ClientConfig: Codable {
     var primaryURL: String
@@ -48,6 +103,7 @@ private struct ClientConfig: Codable {
         case startTimeoutSec = "start_timeout_sec"
     }
 
+    /// Root URL is the shack page (space weather, bands, map, spots).
     static let fallback = ClientConfig(
         primaryURL: "http://greyline.local:8754/",
         secondaryURL: "http://127.0.0.1:8754/",
@@ -123,6 +179,7 @@ private struct ClientConfig: Codable {
 @objc(GreylineHubView)
 final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
     private var webView: WKWebView?
+    private let statusLabel = NSTextField(wrappingLabelWithString: "")
     private var config = ClientConfig.fallback
     private var sheet: NSWindow?
     private var primaryField: NSTextField?
@@ -130,56 +187,124 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
     private var directoryField: NSTextField?
     private var portField: NSTextField?
     private var launchCheckbox: NSButton?
-    private let session: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.waitsForConnectivity = false
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        return URLSession(configuration: configuration)
-    }()
+    private var generation = 0
+    private var statusLines: [String] = []
+    private var sawContent = false
+    private var reloadCount = 0
+    private var blankStreak = 0
+    private var pageIsLoading = false
+    private var tickInFlight = false
+    private let isPreviewMode: Bool
 
     override init?(frame: NSRect, isPreview: Bool) {
+        isPreviewMode = isPreview
         super.init(frame: frame, isPreview: isPreview)
-        animationTimeInterval = 60
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.black.cgColor
+        animationTimeInterval = 0.5
+        configureLayer()
+        installStatusLabel()
     }
 
     required init?(coder decoder: NSCoder) {
+        isPreviewMode = false
         super.init(coder: decoder)
-        animationTimeInterval = 60
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.black.cgColor
+        animationTimeInterval = 0.5
+        configureLayer()
+        installStatusLabel()
     }
+
+    /// Do not paint here. On macOS 26 and later, an opaque draw becomes the
+    /// layer's contents and covers the web view a moment after it appears.
+    override func draw(_ rect: NSRect) {}
 
     override func startAnimation() {
         super.startAnimation()
-        if webView == nil {
-            installWebView()
-        }
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        log("start macOS \(version.majorVersion).\(version.minorVersion).\(version.patchVersion) preview=\(isPreviewMode) bundle=\(bundleVersion())")
+        log("log file \(SaverLog.filePath())")
         config = loadConfig()
+        showStatus("Greyline Hub")
+        showStatus("Log: \(SaverLog.filePath())")
         resolveAndLoad()
     }
 
     override func stopAnimation() {
+        generation += 1
+        log("stop")
+        webView?.stopLoading()
+        webView?.navigationDelegate = nil
+        webView?.removeFromSuperview()
+        webView = nil
         super.stopAnimation()
     }
 
-    override func draw(_ rect: NSRect) {
-        NSColor.black.setFill()
-        rect.fill()
+    override func animateOneFrame() {
+        guard let webView, !pageIsLoading, !tickInFlight else { return }
+        tickInFlight = true
+        let token = generation
+        let finished = TickFlag()
+        let finish: (Any?, Error?) -> Void = { [weak self] result, error in
+            DispatchQueue.main.async {
+                guard let self, self.generation == token, !finished.value else { return }
+                finished.value = true
+                self.tickInFlight = false
+                self.noteTick(result: result, error: error)
+            }
+        }
+        webView.evaluateJavaScript(
+            """
+            (function () {
+              if (typeof window.greylineSaverTick === "function") return window.greylineSaverTick();
+              var side = document.getElementById("side");
+              return JSON.stringify({
+                chars: document.body ? document.body.innerText.length : 0,
+                weather: !!(side && side.querySelector(".stat")),
+                w: window.innerWidth,
+                h: window.innerHeight
+              });
+            })()
+            """
+        ) { result, error in
+            finish(result, error)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            let error = NSError(
+                domain: "GreylineHub",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "the page stopped answering"]
+            )
+            finish(nil, error)
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let window {
+            if setBool(window, "setWindowOcclusionDetectionEnabled:", false) {
+                log("disabled window occlusion detection")
+            }
+        }
+        layoutChrome()
+    }
+
+    override func layout() {
+        super.layout()
+        layoutChrome()
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        layoutChrome()
     }
 
     override func resizeSubviews(withOldSize oldSize: NSSize) {
         super.resizeSubviews(withOldSize: oldSize)
-        webView?.frame = bounds
+        layoutChrome()
     }
 
     override var hasConfigureSheet: Bool { true }
 
     override var configureSheet: NSWindow? {
-        if sheet == nil {
-            sheet = buildSheet()
-        }
+        if sheet == nil { sheet = buildSheet() }
         let current = loadConfig()
         primaryField?.stringValue = current.primaryURL
         secondaryField?.stringValue = current.secondaryURL
@@ -189,91 +314,149 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
         return sheet
     }
 
-    private func installWebView() {
-        let web = WKWebView(frame: bounds)
-        web.autoresizingMask = [.width, .height]
-        web.navigationDelegate = self
-        if #available(macOS 12.0, *) {
-            web.underPageBackgroundColor = .black
+    private func configureLayer() {
+        wantsLayer = true
+        layerContentsRedrawPolicy = .never
+        layer?.backgroundColor = NSColor(srgbRed: 0.03, green: 0.04, blue: 0.05, alpha: 1).cgColor
+    }
+
+    private func installStatusLabel() {
+        statusLabel.textColor = NSColor(srgbRed: 0.93, green: 0.90, blue: 0.82, alpha: 1)
+        statusLabel.font = NSFont.monospacedSystemFont(ofSize: isPreviewMode ? 11 : 20, weight: .regular)
+        statusLabel.alignment = .left
+        statusLabel.maximumNumberOfLines = 0
+        statusLabel.lineBreakMode = .byWordWrapping
+        statusLabel.drawsBackground = false
+        statusLabel.isBezeled = false
+        statusLabel.isEditable = false
+        statusLabel.isSelectable = false
+        addSubview(statusLabel)
+    }
+
+    private func layoutChrome() {
+        let frame = webViewTargetFrame()
+        webView?.frame = frame
+        let pad: CGFloat = isPreviewMode ? 12 : 40
+        statusLabel.frame = bounds.insetBy(dx: pad, dy: pad)
+        if !statusLabel.isHidden {
+            addSubview(statusLabel)
         }
-        addSubview(web)
-        webView = web
+    }
+
+    /// Preview uses the thumbnail bounds. A full-screen saver clamps to the
+    /// display's point size so a backing-pixel frame cannot blow the page up
+    /// and leave only a dark corner on screen.
+    private func webViewTargetFrame() -> NSRect {
+        if isPreviewMode, bounds.width > 2, bounds.height > 2 {
+            return bounds
+        }
+        let screenSize = window?.screen?.frame.size
+            ?? NSScreen.main?.frame.size
+            ?? .zero
+        if screenSize.width > 2, screenSize.height > 2 {
+            if bounds.width > 2, bounds.height > 2 {
+                return NSRect(
+                    x: 0,
+                    y: 0,
+                    width: min(bounds.width, screenSize.width),
+                    height: min(bounds.height, screenSize.height)
+                )
+            }
+            return NSRect(origin: .zero, size: screenSize)
+        }
+        if bounds.width < 2 || bounds.height < 2 {
+            let fallback = NSScreen.main?.frame.size ?? NSSize(width: 1280, height: 800)
+            return NSRect(origin: .zero, size: fallback)
+        }
+        return bounds
     }
 
     private func resolveAndLoad() {
+        generation += 1
+        let token = generation
+        sawContent = false
+        reloadCount = 0
+        blankStreak = 0
         let timeout = max(0.4, config.connectTimeoutSec)
-        probe(config.primaryURL, timeout: timeout) { [weak self] primaryUp in
-            guard let self = self else { return }
-            if primaryUp {
+        showStatus("Trying home server \(config.primaryURL)")
+        showStatus(pageDescription(config.primaryURL))
+        probe(config.primaryURL, timeout: timeout) { [weak self] result in
+            guard let self, self.generation == token else { return }
+            if result.ok {
                 self.loadPage(self.config.primaryURL)
                 return
             }
-            self.probe(self.config.secondaryURL, timeout: timeout) { secondaryUp in
-                if secondaryUp {
+            self.showStatus("Home server did not answer: \(result.detail)")
+            self.showStatus("Trying this Mac \(self.config.secondaryURL)")
+            self.showStatus(self.pageDescription(self.config.secondaryURL))
+            self.probe(self.config.secondaryURL, timeout: timeout) { secondary in
+                guard self.generation == token else { return }
+                if secondary.ok {
                     self.loadPage(self.config.secondaryURL)
                     return
                 }
-                self.startLocalServerThenPoll()
+                self.showStatus("This Mac did not answer: \(secondary.detail)")
+                self.startLocalServerThenPoll(token: token)
             }
         }
     }
 
-    private func startLocalServerThenPoll() {
+    private func startLocalServerThenPoll(token: Int) {
         guard config.localServerEnabled else {
-            showFailure(started: false, detail: "The local server is turned off in the screensaver settings.")
+            showStatus("Failed: the local Python server is turned off in Screen Saver options.")
             return
         }
         let directory = (config.workingDirectory as NSString).expandingTildeInPath
         guard !directory.isEmpty, FileManager.default.fileExists(atPath: directory) else {
-            showFailure(
-                started: false,
-                detail: "Set the Greyline Hub folder in the screensaver options, or install the LaunchAgent so localhost is already running."
-            )
+            showStatus("Failed: set the Greyline Hub folder in Screen Saver options, or install the LaunchAgent so localhost is already running.")
             return
         }
         let started = launchServer(in: directory)
-        pollSecondary(attemptsLeft: Int(max(4, config.startTimeoutSec / 0.4)), started: started)
+        if started {
+            showStatus("Started Python. Waiting for \(config.secondaryURL)")
+        } else {
+            showStatus("Could not start Python from the screen saver (the sandbox often blocks this). Waiting anyway in case it is already running.")
+        }
+        pollSecondary(attemptsLeft: Int(max(4, config.startTimeoutSec / 0.4)), token: token)
     }
 
-    private func pollSecondary(attemptsLeft: Int, started: Bool) {
+    private func pollSecondary(attemptsLeft: Int, token: Int) {
+        guard generation == token else { return }
         if attemptsLeft <= 0 {
-            showFailure(
-                started: started,
-                detail: started
-                    ? "Python was started but \(config.secondaryURL) did not answer."
-                    : "Python could not be started from the screensaver. This is common on macOS Sonoma and later. Install the LaunchAgent instead."
-            )
+            showStatus("Failed: \(config.secondaryURL) never answered.")
+            showStatus("Install the LaunchAgent (clients/macos/install-local-server.sh) and try again.")
             return
         }
-        probe(config.secondaryURL, timeout: 0.8) { [weak self] up in
-            guard let self = self else { return }
-            if up {
+        probe(config.secondaryURL, timeout: 0.8) { [weak self] result in
+            guard let self, self.generation == token else { return }
+            if result.ok {
                 self.loadPage(self.config.secondaryURL)
                 return
             }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 0.4) {
-                self.pollSecondary(attemptsLeft: attemptsLeft - 1, started: started)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                self.pollSecondary(attemptsLeft: attemptsLeft - 1, token: token)
             }
         }
     }
 
-    /// Returns true when this view spawned a process. A false return can still
-    /// be fine: another display may already be starting the same server.
     private func launchServer(in directory: String) -> Bool {
         let support = configDirectory()
         try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         let lockURL = support.appendingPathComponent("server.lock")
         FileManager.default.createFile(atPath: lockURL.path, contents: nil)
         let fd = open(lockURL.path, O_RDWR)
-        if fd < 0 {
+        if fd >= 0 {
+            if flock(fd, LOCK_EX | LOCK_NB) != 0 {
+                close(fd)
+                log("another screen is already starting Python")
+                return false
+            }
+            defer {
+                flock(fd, LOCK_UN)
+                close(fd)
+            }
             return spawnPython(in: directory)
         }
-        defer { close(fd) }
-        if flock(fd, LOCK_EX | LOCK_NB) != 0 {
-            NSLog("Greyline Hub: another saver is starting the local server")
-            return false
-        }
-        defer { flock(fd, LOCK_UN) }
         return spawnPython(in: directory)
     }
 
@@ -287,19 +470,14 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
         }
         process.arguments = arguments
         process.currentDirectoryURL = URL(fileURLWithPath: directory)
-        let logURL = URL(fileURLWithPath: "/tmp/greyline-hub-saver.log")
-        FileManager.default.createFile(atPath: logURL.path, contents: nil)
-        if let handle = try? FileHandle(forWritingTo: logURL) {
-            handle.seekToEndOfFile()
-            process.standardOutput = handle
-            process.standardError = handle
-        }
+        log("spawn \(python) \(arguments.joined(separator: " ")) in \(directory)")
         do {
             try process.run()
-            NSLog("Greyline Hub started %@ in %@", python, directory)
+            log("python pid \(process.processIdentifier)")
             return true
         } catch {
-            NSLog("Greyline Hub could not start Python: %@", error.localizedDescription)
+            log("python failed: \(error.localizedDescription)")
+            showStatus("Failed to start Python: \(error.localizedDescription)")
             return false
         }
     }
@@ -312,72 +490,226 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
         return preferred.isEmpty ? "/usr/bin/python3" : preferred
     }
 
-    private func probe(_ urlString: String, timeout: TimeInterval, done: @escaping (Bool) -> Void) {
+    private struct ProbeResult {
+        var ok: Bool
+        var detail: String
+    }
+
+    private func probe(_ urlString: String, timeout: TimeInterval, done: @escaping (ProbeResult) -> Void) {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmed), let scheme = url.scheme, scheme == "http" || scheme == "https" else {
-            done(false)
+            DispatchQueue.main.async { done(ProbeResult(ok: false, detail: "URL is not http or https")) }
             return
         }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         request.timeoutInterval = timeout
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = timeout
+        configuration.timeoutIntervalForResource = timeout
+        configuration.waitsForConnectivity = false
+        let session = URLSession(configuration: configuration)
         let task = session.dataTask(with: request) { _, response, error in
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             let ok = error == nil && (200..<400).contains(code)
+            let detail: String
+            if let error {
+                detail = error.localizedDescription
+            } else if !ok {
+                detail = "HTTP \(code)"
+            } else {
+                detail = "HTTP \(code)"
+            }
+            session.invalidateAndCancel()
             DispatchQueue.main.async {
-                done(ok)
+                done(ProbeResult(ok: ok, detail: detail))
             }
         }
         task.resume()
     }
 
     private func loadPage(_ urlString: String) {
+        let frame = webViewTargetFrame()
+        if bounds.width < 2 || bounds.height < 2 {
+            setFrameSize(frame.size)
+        }
+        let web = ensureWebView(frame: frame)
         guard let url = URL(string: urlString) else {
-            showFailure(started: false, detail: "The dashboard URL is not valid.")
+            showStatus("Failed: the dashboard URL is not valid.")
             return
         }
-        NSLog("Greyline Hub showing %@", urlString)
-        webView?.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData))
+        log("load \(urlString) frame=\(Int(frame.width))x\(Int(frame.height)) \(pageDescription(urlString))")
+        showStatus("Loading \(pageDescription(urlString))")
+        showStatus(urlString)
+        pageIsLoading = true
+        web.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData))
+    }
+
+    private func ensureWebView(frame: NSRect) -> WKWebView {
+        if let webView { return webView }
+        let configuration = WKWebViewConfiguration()
+        let script = WKUserScript(
+            source: """
+            try {
+              Object.defineProperty(Document.prototype, "hidden", {
+                configurable: true, get: function () { return false; }
+              });
+              Object.defineProperty(Document.prototype, "visibilityState", {
+                configurable: true, get: function () { return "visible"; }
+              });
+            } catch (e) {}
+            """,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        configuration.userContentController.addUserScript(script)
+        let web = WKWebView(frame: frame, configuration: configuration)
+        web.navigationDelegate = self
+        if #available(macOS 12.0, *) {
+            web.underPageBackgroundColor = .black
+        }
+        if #available(macOS 13.3, *) {
+            web.isInspectable = true
+        }
+        if setBool(web, "_setWindowOcclusionDetectionEnabled:", false) {
+            log("disabled WKWebView occlusion detection")
+        } else {
+            log("WKWebView occlusion selector is missing; the page may go black")
+        }
+        if setBool(web, "_setAlwaysRunsAtForegroundPriority:", true) {
+            log("requested foreground WebContent priority (no effect on macOS 26 and later)")
+        }
+        addSubview(web)
+        webView = web
+        layoutChrome()
+        return web
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        pageIsLoading = false
+        log("page finished \(webView.url?.absoluteString ?? "")")
+        showStatus("Page loaded. Waiting for it to draw.")
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        showFailure(started: false, detail: error.localizedDescription)
+        pageIsLoading = false
+        let text = error.localizedDescription
+        log("navigation failed: \(text)")
+        if (error as NSError).code == NSURLErrorCancelled { return }
+        showStatus("Failed: \(text)")
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        showFailure(started: false, detail: error.localizedDescription)
+        pageIsLoading = false
+        let text = error.localizedDescription
+        log("provisional navigation failed: \(text)")
+        if (error as NSError).code == NSURLErrorCancelled { return }
+        showStatus("Failed: \(text)")
     }
 
-    private func showFailure(started: Bool, detail: String) {
-        let primary = escape(config.primaryURL)
-        let secondary = escape(config.secondaryURL)
-        let extra = escape(detail)
-        let html = """
-        <!DOCTYPE html>
-        <html><head><meta charset="utf-8"><style>
-        body { margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center;
-               background: #080a0d; color: #e6edf3; font: 18px -apple-system, sans-serif; }
-        main { max-width: 640px; padding: 32px; }
-        h1 { font-weight: 560; letter-spacing: 0.14em; font-size: 14px; color: #e4b15a; }
-        p { color: #8b9bab; line-height: 1.45; }
-        code { color: #79d0c4; }
-        </style></head>
-        <body><main>
-        <h1>GREYLINE HUB</h1>
-        <p>The dashboard did not answer.</p>
-        <p>Primary <code>\(primary)</code><br>Secondary <code>\(secondary)</code></p>
-        <p>\(extra)</p>
-        <p>On the home machine, run the server on the port you chose, or publish the pages into the web server you already use. On this Mac, install the LaunchAgent so localhost stays up while you are away.</p>
-        </main></body></html>
-        """
-        _ = started
-        webView?.loadHTMLString(html, baseURL: nil)
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        log("WebContent process terminated")
+        handleBlank("WebContent process terminated")
     }
 
-    private func escape(_ text: String) -> String {
-        text
-            .replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "<", with: "&lt;")
-            .replacingOccurrences(of: ">", with: "&gt;")
+    private func noteTick(result: Any?, error: Error?) {
+        if let error {
+            blankStreak += 1
+            log("tick failed (\(blankStreak)): \(error.localizedDescription)")
+            if blankStreak >= 2 {
+                handleBlank(error.localizedDescription)
+            }
+            return
+        }
+        let text = result as? String ?? ""
+        let chars = jsonInt(text, key: "chars") ?? 0
+        if chars > 40 {
+            if !sawContent {
+                log("page is drawing (\(chars) characters) \(text)")
+            }
+            sawContent = true
+            blankStreak = 0
+            hideStatus()
+            return
+        }
+        blankStreak += 1
+        if blankStreak >= 2 {
+            log("page has no text (\(chars) characters) \(text)")
+            handleBlank(sawContent ? "the page went blank after it had drawn" : "the page never drew")
+        }
+    }
+
+    private func handleBlank(_ reason: String) {
+        showStatus("Failed: \(reason)")
+        showStatus("macOS suspends a web view inside a screen saver. This build asks WebKit not to do that.")
+        guard reloadCount < 1, let webView else { return }
+        reloadCount += 1
+        blankStreak = 0
+        showStatus("Reloading the page once.")
+        log("reloading after blank")
+        pageIsLoading = true
+        webView.reload()
+    }
+
+    private func showStatus(_ line: String) {
+        log(line)
+        statusLines.append(line)
+        if statusLines.count > 14 {
+            statusLines.removeFirst(statusLines.count - 14)
+        }
+        statusLabel.stringValue = statusLines.joined(separator: "\n")
+        statusLabel.isHidden = false
+        addSubview(statusLabel)
+    }
+
+    private func hideStatus() {
+        statusLabel.isHidden = true
+    }
+
+    private func log(_ message: String) {
+        SaverLog.write(message)
+    }
+
+    private func pageDescription(_ urlString: String) -> String {
+        let path = URL(string: urlString)?.path ?? "/"
+        let trimmed = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if trimmed.isEmpty || trimmed == "index.html" {
+            return "Shack page: space weather, HF bands, map, and spots."
+        }
+        if trimmed == "map" || trimmed.hasSuffix("/map") {
+            return "Map page: no space weather panel. Use / for the shack page."
+        }
+        return "Page /\(trimmed)/"
+    }
+
+    private func bundleVersion() -> String {
+        let bundle = Bundle(for: GreylineHubView.self)
+        let short = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        return "\(short) (\(build))"
+    }
+
+    private func jsonInt(_ json: String, key: String) -> Int? {
+        guard let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        if let number = object[key] as? Int { return number }
+        if let number = object[key] as? Double { return Int(number) }
+        return nil
+    }
+
+    /// BOOL-taking WebKit and AppKit setters are private. Skip them when the
+    /// selector is gone so a future OS does not crash the saver.
+    @discardableResult
+    private func setBool(_ object: NSObject, _ name: String, _ value: Bool) -> Bool {
+        let selector = NSSelectorFromString(name)
+        guard object.responds(to: selector),
+              let method = class_getInstanceMethod(type(of: object), selector) else {
+            return false
+        }
+        typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
+        unsafeBitCast(method_getImplementation(method), to: Setter.self)(object, selector, value)
+        return true
     }
 
     private func configDirectory() -> URL {
@@ -392,11 +724,18 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
 
     private func loadConfig() -> ClientConfig {
         let url = configURL()
-        guard let data = try? Data(contentsOf: url) else {
+        guard let data = try? Data(contentsOf: url),
+              let text = String(data: data, encoding: .utf8) else {
+            log("no client.json at \(url.path); using the shack page")
             return .fallback
         }
         let decoder = JSONDecoder()
-        return (try? decoder.decode(ClientConfig.self, from: data)) ?? .fallback
+        guard let decoded = try? decoder.decode(ClientConfig.self, from: Data(stripJSONComments(text).utf8)) else {
+            log("could not read \(url.path); using the shack page")
+            return .fallback
+        }
+        log("config \(url.path) primary=\(decoded.primaryURL) secondary=\(decoded.secondaryURL)")
+        return decoded
     }
 
     private func saveConfig(_ value: ClientConfig) {
@@ -406,12 +745,63 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
         let directory = configDirectory()
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try? data.write(to: configURL())
-        NSLog("Greyline Hub wrote %@", configURL().path)
+        log("wrote \(configURL().path)")
+    }
+
+    private func stripJSONComments(_ text: String) -> String {
+        var out = ""
+        var index = text.startIndex
+        var inString = false
+        var escaped = false
+        while index < text.endIndex {
+            let character = text[index]
+            if inString {
+                out.append(character)
+                if escaped {
+                    escaped = false
+                } else if character == "\\" {
+                    escaped = true
+                } else if character == "\"" {
+                    inString = false
+                }
+                index = text.index(after: index)
+                continue
+            }
+            if character == "\"" {
+                inString = true
+                out.append(character)
+                index = text.index(after: index)
+                continue
+            }
+            let next = text.index(after: index)
+            if character == "/", next < text.endIndex, text[next] == "/" {
+                index = next
+                while index < text.endIndex, text[index] != "\n" {
+                    index = text.index(after: index)
+                }
+                continue
+            }
+            if character == "/", next < text.endIndex, text[next] == "*" {
+                index = text.index(after: next)
+                while index < text.endIndex {
+                    let after = text.index(after: index)
+                    if text[index] == "*", after < text.endIndex, text[after] == "/" {
+                        index = text.index(after: after)
+                        break
+                    }
+                    index = after
+                }
+                continue
+            }
+            out.append(character)
+            index = next
+        }
+        return out
     }
 
     private func buildSheet() -> NSWindow {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 280),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 300),
             styleMask: [.titled],
             backing: .buffered,
             defer: true
@@ -431,35 +821,39 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
             return field
         }
 
-        label("Primary URL (home server page)", NSRect(x: 20, y: 232, width: 520, height: 18))
-        primaryField = input(NSRect(x: 20, y: 206, width: 520, height: 24))
-        label("Secondary URL (this Mac, if the home server is unreachable)", NSRect(x: 20, y: 178, width: 520, height: 18))
-        secondaryField = input(NSRect(x: 20, y: 152, width: 520, height: 24))
-        label("Greyline Hub folder, used only if the secondary URL is down", NSRect(x: 20, y: 124, width: 400, height: 18))
-        directoryField = input(NSRect(x: 20, y: 98, width: 420, height: 24))
-        label("Port", NSRect(x: 450, y: 124, width: 80, height: 18))
-        portField = input(NSRect(x: 450, y: 98, width: 90, height: 24))
+        label("Primary URL. The shack page ends in /. /map/ hides space weather.", NSRect(x: 20, y: 250, width: 520, height: 18))
+        primaryField = input(NSRect(x: 20, y: 224, width: 520, height: 24))
+        label("Secondary URL on this Mac, used when the home server is down", NSRect(x: 20, y: 196, width: 520, height: 18))
+        secondaryField = input(NSRect(x: 20, y: 170, width: 520, height: 24))
+        label("Greyline Hub folder, used only if the secondary URL is down", NSRect(x: 20, y: 142, width: 400, height: 18))
+        directoryField = input(NSRect(x: 20, y: 116, width: 420, height: 24))
+        label("Port", NSRect(x: 450, y: 142, width: 80, height: 18))
+        portField = input(NSRect(x: 450, y: 116, width: 90, height: 24))
 
         let checkbox = NSButton(checkboxWithTitle: "Start the local Python server when localhost is down", target: nil, action: nil)
-        checkbox.frame = NSRect(x: 20, y: 62, width: 420, height: 22)
+        checkbox.frame = NSRect(x: 20, y: 78, width: 460, height: 22)
         content.addSubview(checkbox)
         launchCheckbox = checkbox
 
+        let hint = NSTextField(wrappingLabelWithString: "A blank screen is a WebKit suspension. Status text stays on screen, and the log is listed there.")
+        hint.frame = NSRect(x: 20, y: 48, width: 520, height: 28)
+        hint.textColor = .secondaryLabelColor
+        hint.font = NSFont.systemFont(ofSize: 11)
+        content.addSubview(hint)
+
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelSheet))
-        cancel.frame = NSRect(x: 350, y: 16, width: 90, height: 28)
+        cancel.frame = NSRect(x: 350, y: 12, width: 90, height: 28)
         cancel.bezelStyle = .rounded
         content.addSubview(cancel)
         let save = NSButton(title: "Save", target: self, action: #selector(saveSheet))
-        save.frame = NSRect(x: 448, y: 16, width: 90, height: 28)
+        save.frame = NSRect(x: 448, y: 12, width: 90, height: 28)
         save.bezelStyle = .rounded
         save.keyEquivalent = "\r"
         content.addSubview(save)
         return window
     }
 
-    @objc private func cancelSheet() {
-        endSheet()
-    }
+    @objc private func cancelSheet() { endSheet() }
 
     @objc private func saveSheet() {
         var next = loadConfig()
@@ -477,7 +871,7 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
     }
 
     private func endSheet() {
-        guard let sheet = sheet else { return }
+        guard let sheet else { return }
         if let parent = sheet.sheetParent {
             parent.endSheet(sheet)
         } else {

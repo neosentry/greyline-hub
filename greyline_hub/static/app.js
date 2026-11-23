@@ -759,3 +759,18 @@ poll();
 setInterval(poll, 20000);
 setInterval(tick, 250);
 setInterval(() => drawMap(false), 1000);
+
+// The macOS screen saver calls this from its own timer. legacyScreenSaver
+// marks the web view hidden, which freezes requestAnimationFrame and can
+// stall setInterval. The native timer keeps the clock and the map moving.
+window.greylineSaverTick = function greylineSaverTick() {
+  if (typeof tick === "function") tick();
+  if (typeof drawMap === "function") drawMap(false);
+  const sideNode = document.getElementById("side");
+  return JSON.stringify({
+    chars: document.body ? document.body.innerText.length : 0,
+    weather: !!(sideNode && sideNode.querySelector(".stat")),
+    w: window.innerWidth,
+    h: window.innerHeight,
+  });
+};

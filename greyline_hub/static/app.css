@@ -479,3 +479,12 @@ body.directory {
   #dx { display: none; }
   .stat .val { font-size: 18px; }
 }
+
+/* A full screen is a few feet away. Keep the space-weather figures large. */
+@media (min-width: 1100px) and (min-height: 800px) {
+  #columns { grid-template-columns: minmax(0, 1fr) 400px; }
+  .stat .val { font-size: 36px; }
+  .time { font-size: 44px; }
+  .call { font-size: 34px; }
+  #side .lbl, .section-h h2 { font-size: 12px; }
+}

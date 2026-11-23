@@ -135,7 +135,7 @@ The client contract is in `clients/README.md`. Short version:
 
 An HTTP status from 200 to 399 counts as up, whether the page comes from the built-in server or from a folder on nginx.
 
-The macOS saver is `clients/macos/`. Build it on a Mac with `./build.sh`. This repository was prepared on Linux, so the `.saver` bundle was not compiled or installed here. The steps, the sandbox limitation on recent macOS, and the LaunchAgent workaround are in `clients/macos/README.md`.
+The macOS saver is `clients/macos/`. A fresh install opens the shack page at `/` (space weather, HF bands, map, and spots). Build it on a Mac with `./build.sh`. This repository was prepared on Linux, so the `.saver` bundle was not compiled here. Rebuild steps, the blank-screen workaround for macOS 26 and 27, and how to collect logs are in `clients/macos/README.md`.
 
 ## Data
 

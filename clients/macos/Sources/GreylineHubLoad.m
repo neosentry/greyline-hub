@@ -24,7 +24,14 @@ static void greyline_append(const char *path, const char *message) {
 
 static void greyline_note(const char *message) {
     os_log_t log = os_log_create("com.greylinehub.screensaver", "load");
-    os_log(log, "%{public}s", message);
+    os_log(log, "GreylineHub: %{public}s", message);
+    os_log(OS_LOG_DEFAULT, "GreylineHub: %{public}s", message);
+    NSString *container = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Logs"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:container
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:nil];
+    greyline_append([[container stringByAppendingPathComponent:@"GreylineHub-saver.log"] fileSystemRepresentation], message);
     const char *home = getenv("HOME");
     char path[1024];
     greyline_append("/tmp/GreylineHub-saver.log", message);

@@ -148,9 +148,21 @@ def assert_publish_directory(directory: Path) -> None:
 
 
 class Site:
-    def __init__(self, directory: Path, publish_directory: Path | None = None):
+    def __init__(
+        self,
+        directory: Path,
+        publish_directory: Path | None = None,
+        extra_publish: list[Path] | None = None,
+    ):
         self.directory = Path(directory)
-        self.publish_directory = Path(publish_directory) if publish_directory else None
+        seen: list[Path] = []
+        for candidate in [publish_directory, *(extra_publish or [])]:
+            if candidate is None:
+                continue
+            path = Path(candidate).expanduser()
+            if path not in seen:
+                seen.append(path)
+        self.publish_directories = seen
         self._signature: tuple | None = None
 
     def rebuild(self, cfg: dict, force: bool = False) -> None:
@@ -164,20 +176,28 @@ class Site:
             return
         self._write_tree(self.directory, cfg)
         self._signature = signature
-        if self.publish_directory:
-            assert_publish_directory(self.publish_directory)
-            self._write_tree(self.publish_directory, cfg)
+        for directory in self.publish_directories:
+            try:
+                assert_publish_directory(directory)
+                self._write_tree(directory, cfg)
+            except PublishError as exc:
+                import logging
+
+                logging.getLogger("greyline").error("%s", exc)
 
     def write_status(self, status: dict) -> None:
         body = json.dumps(status, separators=(",", ":")).encode("utf-8")
         health = json.dumps(
             {"ok": True, "service": "greyline-hub", "time": status.get("server_time")}
         ).encode("utf-8")
-        for root in (self.directory, self.publish_directory):
-            if root is None:
-                continue
-            _atomic_write(root / "data" / "status.json", body)
-            _atomic_write(root / "health.json", health)
+        for root in [self.directory, *self.publish_directories]:
+            try:
+                _atomic_write(root / "data" / "status.json", body)
+                _atomic_write(root / "health.json", health)
+            except OSError as exc:
+                import logging
+
+                logging.getLogger("greyline").error("could not write %s: %s", root, exc)
 
     def _write_tree(self, root: Path, cfg: dict) -> None:
         root.mkdir(parents=True, exist_ok=True)

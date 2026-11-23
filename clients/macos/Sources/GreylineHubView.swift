@@ -19,6 +19,69 @@ private final class TickFlag {
     var value = false
 }
 
+/// Serves the published site from disk. legacyScreenSaver blocks every
+/// outgoing socket, including 127.0.0.1, so the page cannot be loaded over HTTP.
+private final class LocalSiteHandler: NSObject, WKURLSchemeHandler {
+    var root: URL?
+    private var stopped = Set<ObjectIdentifier>()
+    private let lock = NSLock()
+
+    func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
+        let identity = ObjectIdentifier(urlSchemeTask as AnyObject)
+        guard let url = urlSchemeTask.request.url, let root else {
+            urlSchemeTask.didFailWithError(URLError(.badURL))
+            return
+        }
+        let relative = (url.path.isEmpty || url.path == "/") ? "index.html" : String(url.path.dropFirst())
+        let file = root.appendingPathComponent(relative).standardizedFileURL
+        let rootPath = root.standardizedFileURL.path
+        let filePath = file.path
+        guard filePath == rootPath || filePath.hasPrefix(rootPath + "/") else {
+            urlSchemeTask.didFailWithError(URLError(.noPermissionsToReadFile))
+            return
+        }
+        guard let data = try? Data(contentsOf: file) else {
+            urlSchemeTask.didFailWithError(URLError(.fileDoesNotExist))
+            return
+        }
+        let mime: String
+        switch file.pathExtension.lowercased() {
+        case "html": mime = "text/html; charset=utf-8"
+        case "css": mime = "text/css; charset=utf-8"
+        case "js": mime = "text/javascript; charset=utf-8"
+        case "json", "geojson": mime = "application/json; charset=utf-8"
+        default: mime = "application/octet-stream"
+        }
+        guard let response = HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: [
+                "Content-Type": mime,
+                "Content-Length": String(data.count),
+                "Cache-Control": "no-store",
+                "Access-Control-Allow-Origin": "*",
+            ]
+        ) else {
+            urlSchemeTask.didFailWithError(URLError(.badServerResponse))
+            return
+        }
+        lock.lock()
+        let cancelled = stopped.contains(identity)
+        lock.unlock()
+        if cancelled { return }
+        urlSchemeTask.didReceive(response)
+        urlSchemeTask.didReceive(data)
+        urlSchemeTask.didFinish()
+    }
+
+    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
+        lock.lock()
+        stopped.insert(ObjectIdentifier(urlSchemeTask as AnyObject))
+        lock.unlock()
+    }
+}
+
 private enum SaverLog {
     static let logger = Logger(subsystem: saverSubsystem, category: "saver")
     private static let queue = DispatchQueue(label: "com.greylinehub.screensaver.log")
@@ -31,7 +94,10 @@ private enum SaverLog {
     static func write(_ message: String) {
         let stamp = ISO8601DateFormatter().string(from: Date())
         let line = "\(stamp) \(message)"
+        // .default plus an explicit public string. A plain `log stream` hides
+        // info-level and redacts interpolated text, which is why 0.1.2 looked silent.
         logger.log("\(line, privacy: .public)")
+        os_log("%{public}@", log: .default, type: .default, line)
         queue.async {
             let url = resolvedURL()
             let payload = Data((line + "\n").utf8)
@@ -64,6 +130,9 @@ private enum SaverLog {
 
     private static func logCandidates(named name: String) -> [URL] {
         var urls: [URL] = []
+        // Inside legacyScreenSaver this is the container, which the sandbox allows.
+        let containerHome = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+        urls.append(containerHome.appendingPathComponent("Library/Logs", isDirectory: true).appendingPathComponent(name))
         if let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first {
             urls.append(library.appendingPathComponent("Logs", isDirectory: true).appendingPathComponent(name))
         }
@@ -107,7 +176,7 @@ private struct ClientConfig: Codable {
     static let fallback = ClientConfig(
         primaryURL: "http://greyline.local:8754/",
         secondaryURL: "http://127.0.0.1:8754/",
-        connectTimeoutSec: 1.5,
+        connectTimeoutSec: 4,
         localServerEnabled: true,
         pythonPath: "/usr/bin/python3",
         workingDirectory: "",
@@ -179,6 +248,8 @@ private struct ClientConfig: Codable {
 @objc(GreylineHubView)
 public final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
     private var webView: WKWebView?
+    private let siteHandler = LocalSiteHandler()
+    private var loadedLocalFile = false
     // Created in init after the first log line. A property initializer would
     // run AppKit before any log, and a crash there leaves no trace.
     private var statusLabel: NSTextField!
@@ -419,8 +490,13 @@ public final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
         sawContent = false
         reloadCount = 0
         blankStreak = 0
-        let timeout = max(0.4, config.connectTimeoutSec)
-        showStatus("Trying home server \(config.primaryURL)")
+        let timeout = max(4, config.connectTimeoutSec)
+        if let site = findPublishedSite() {
+            loadLocalSite(site)
+        } else {
+            showStatus("No local shack page yet. The screen saver sandbox blocks network, including 127.0.0.1.")
+        }
+        showStatus("Trying home server \(config.primaryURL) (\(Int(timeout))s)")
         showStatus(pageDescription(config.primaryURL))
         probe(config.primaryURL, timeout: timeout) { [weak self] result in
             guard let self, self.generation == token else { return }
@@ -428,19 +504,82 @@ public final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
                 self.loadPage(self.config.primaryURL)
                 return
             }
-            self.showStatus("Home server did not answer: \(result.detail)")
-            self.showStatus("Trying this Mac \(self.config.secondaryURL)")
-            self.showStatus(self.pageDescription(self.config.secondaryURL))
+            self.noteNetworkFailure("Home server did not answer: \(result.detail)")
+            self.noteNetworkFailure("Trying this Mac \(self.config.secondaryURL)")
             self.probe(self.config.secondaryURL, timeout: timeout) { secondary in
                 guard self.generation == token else { return }
                 if secondary.ok {
                     self.loadPage(self.config.secondaryURL)
                     return
                 }
-                self.showStatus("This Mac did not answer: \(secondary.detail)")
+                self.noteNetworkFailure("This Mac did not answer: \(secondary.detail)")
+                if self.loadedLocalFile {
+                    self.log("keeping the local shack page; network probes failed")
+                    return
+                }
                 self.startLocalServerThenPoll(token: token)
             }
         }
+    }
+
+    /// A failure only covers the page when we have nothing else on screen.
+    private func noteNetworkFailure(_ line: String) {
+        log(line)
+        if !loadedLocalFile {
+            showStatus(line)
+        }
+    }
+
+    private func publishedSiteCandidates() -> [URL] {
+        var urls: [URL] = []
+        let container = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+        urls.append(container.appendingPathComponent("Library/Application Support/GreylineHub/site", isDirectory: true))
+        if let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            urls.append(support.appendingPathComponent("GreylineHub/site", isDirectory: true))
+        }
+        if let env = getenv("HOME") {
+            let home = URL(fileURLWithPath: String(cString: env), isDirectory: true)
+            for name in [
+                "com.apple.ScreenSaver.Engine.legacyScreenSaver",
+                "com.apple.ScreenSaver.Engine.legacyScreenSaver-arm64",
+                "com.apple.ScreenSaver.Engine.legacyScreenSaver-x86_64",
+            ] {
+                urls.append(home.appendingPathComponent(
+                    "Library/Containers/\(name)/Data/Library/Application Support/GreylineHub/site",
+                    isDirectory: true
+                ))
+            }
+            urls.append(home.appendingPathComponent("Library/Application Support/GreylineHub/site", isDirectory: true))
+        }
+        return urls
+    }
+
+    private func findPublishedSite() -> URL? {
+        var seen = Set<String>()
+        for url in publishedSiteCandidates() {
+            let path = url.standardizedFileURL.path
+            if !seen.insert(path).inserted { continue }
+            let exists = FileManager.default.fileExists(atPath: url.appendingPathComponent("index.html").path)
+            log("local site \(path) index=\(exists)")
+            if exists { return url }
+        }
+        return nil
+    }
+
+    private func loadLocalSite(_ root: URL) {
+        siteHandler.root = root
+        let frame = webViewTargetFrame()
+        if bounds.width < 2 || bounds.height < 2 {
+            setFrameSize(frame.size)
+        }
+        let web = ensureWebView(frame: frame)
+        guard let url = URL(string: "greyline://local/index.html") else { return }
+        log("load local shack page \(root.path)")
+        showStatus("Loading the local shack page. Network is not used.")
+        showStatus(root.path)
+        pageIsLoading = true
+        loadedLocalFile = true
+        web.load(URLRequest(url: url))
     }
 
     private func startLocalServerThenPoll(token: Int) {
@@ -464,9 +603,13 @@ public final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
 
     private func pollSecondary(attemptsLeft: Int, token: Int) {
         guard generation == token else { return }
+        if let site = findPublishedSite() {
+            loadLocalSite(site)
+            return
+        }
         if attemptsLeft <= 0 {
-            showStatus("Failed: \(config.secondaryURL) never answered.")
-            showStatus("Install the LaunchAgent (clients/macos/install-local-server.sh) and try again.")
+            showStatus("Failed: network is blocked and no local shack page was published.")
+            showStatus("Restart Greyline Hub on this Mac. Pass the directory you cloned, not a fixed home path.")
             return
         }
         probe(config.secondaryURL, timeout: 0.8) { [weak self] result in
@@ -604,6 +747,7 @@ public final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
             forMainFrameOnly: true
         )
         configuration.userContentController.addUserScript(script)
+        configuration.setURLSchemeHandler(siteHandler, forURLScheme: "greyline")
         let web = WKWebView(frame: frame, configuration: configuration)
         web.navigationDelegate = self
         if #available(macOS 12.0, *) {

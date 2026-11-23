@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import signal
 import socket
+import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +29,29 @@ def lan_ip() -> str | None:
             return sock.getsockname()[0]
     except OSError:
         return None
+
+
+def screensaver_publish_dirs() -> list[Path]:
+    """Folders the macOS screen saver can read without using the network.
+
+    legacyScreenSaver's sandbox blocks outgoing connections, including
+    127.0.0.1. It can read its own container, so the unsandboxed server
+    writes a copy of the site there.
+    """
+    if sys.platform != "darwin":
+        return []
+    home = Path.home()
+    names = (
+        "com.apple.ScreenSaver.Engine.legacyScreenSaver",
+        "com.apple.ScreenSaver.Engine.legacyScreenSaver-arm64",
+        "com.apple.ScreenSaver.Engine.legacyScreenSaver-x86_64",
+    )
+    folders = [
+        home / "Library/Containers" / name / "Data/Library/Application Support/GreylineHub/site"
+        for name in names
+    ]
+    folders.append(home / "Library/Application Support/GreylineHub/site")
+    return folders
 
 
 def runtime_dir(cfg: dict) -> Path:
@@ -74,7 +98,11 @@ class Service:
         publish = None
         if cfg["publish"]["enabled"]:
             publish = Path(cfg["publish"]["directory"]).expanduser()
-        self.site = Site(runtime_dir(cfg) / "site", publish)
+        extras = screensaver_publish_dirs()
+        self.site = Site(runtime_dir(cfg) / "site", publish, extras)
+        for folder in self.site.publish_directories:
+            if publish is None or folder != publish:
+                log.info("also publishing for the screen saver into %s", folder)
         self.server: HubServer | None = None
         self._telnet: TelnetSpots | None = None
 

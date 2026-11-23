@@ -15,10 +15,6 @@ import WebKit
 
 private let saverSubsystem = "com.greylinehub.screensaver"
 
-private final class TickFlag {
-    var value = false
-}
-
 /// Serves the published site from disk. legacyScreenSaver blocks every
 /// outgoing socket, including 127.0.0.1, so the page cannot be loaded over HTTP.
 private final class LocalSiteHandler: NSObject, WKURLSchemeHandler {
@@ -245,14 +241,50 @@ private struct ClientConfig: Codable {
     }
 }
 
+private extension Notification.Name {
+    static let greylineFrame = Notification.Name("GreylineHubFrame")
+}
+
+/// One web view for every screen. legacyScreenSaver builds two views (the log
+/// showed webPageID 36 and 114), and each one was suspended.
+private final class PageHost {
+    static let shared = PageHost()
+    let handler = LocalSiteHandler()
+    var webView: WKWebView?
+    var image: NSImage?
+    var creating = false
+    var loadStarted = false
+    var clients = Set<ObjectIdentifier>()
+    private var parkWindow: NSWindow?
+
+    func holdOffscreen(_ web: WKWebView) {
+        if parkWindow == nil {
+            let window = NSWindow(
+                contentRect: NSRect(x: -20000, y: -20000, width: 1440, height: 900),
+                styleMask: [.borderless],
+                backing: .buffered,
+                defer: false
+            )
+            window.isReleasedWhenClosed = false
+            window.ignoresMouseEvents = true
+            parkWindow = window
+        }
+        parkWindow?.contentView?.addSubview(web)
+        web.frame = parkWindow?.contentView?.bounds ?? web.frame
+    }
+}
+
 @objc(GreylineHubView)
 final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
     private var webView: WKWebView?
-    private let siteHandler = LocalSiteHandler()
     private var loadedLocalFile = false
     // Created in init after the first log line. A property initializer would
     // run AppKit before any log, and a crash there leaves no trace.
     private var statusLabel: NSTextField!
+    private var snapshotView: NSImageView!
+    private var lastGoodImage: NSImage?
+    private var snapshotInFlight = false
+    private var blankSnapshots = 0
     private var config = ClientConfig.fallback
     private var sheet: NSWindow?
     private var primaryField: NSTextField?
@@ -264,9 +296,7 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
     private var statusLines: [String] = []
     private var sawContent = false
     private var reloadCount = 0
-    private var blankStreak = 0
     private var pageIsLoading = false
-    private var tickInFlight = false
     private var didTryAdoptSize = false
     private var lastLayoutLog = ""
     private let isPreviewMode: Bool
@@ -276,9 +306,15 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
         isPreviewMode = isPreview
         super.init(frame: frame, isPreview: isPreview)
         SaverLog.write("init super.init returned")
-        animationTimeInterval = 0.5
+        animationTimeInterval = 1
         configureLayer()
         installStatusLabel()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(sharedFrameChanged),
+            name: .greylineFrame,
+            object: nil
+        )
         SaverLog.write("init done")
     }
 
@@ -287,15 +323,25 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
         isPreviewMode = false
         super.init(coder: decoder)
         SaverLog.write("init(coder:) super.init returned")
-        animationTimeInterval = 0.5
+        animationTimeInterval = 1
         configureLayer()
         installStatusLabel()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(sharedFrameChanged),
+            name: .greylineFrame,
+            object: nil
+        )
         SaverLog.write("init(coder:) done")
     }
 
-    /// Do not paint here. On macOS 26 and later, an opaque draw becomes the
-    /// layer's contents and covers the web view a moment after it appears.
-    override func draw(_ rect: NSRect) {}
+    /// Paint the last good page bitmap ourselves. WebKit's own layers are
+    /// marked volatile by legacyScreenSaver and go clear after about a second.
+    override func draw(_ rect: NSRect) {
+        let image = PageHost.shared.image ?? lastGoodImage
+        guard let image else { return }
+        image.draw(in: bounds, from: .zero, operation: .copy, fraction: 1)
+    }
 
     override func startAnimation() {
         super.startAnimation()
@@ -307,55 +353,67 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
         layoutChrome()
         config = loadConfig()
         showStatus("Log: \(SaverLog.filePath())")
+        PageHost.shared.clients.insert(ObjectIdentifier(self))
         resolveAndLoad()
     }
 
     override func stopAnimation() {
         generation += 1
-        log("stop")
-        webView?.stopLoading()
-        webView?.navigationDelegate = nil
-        webView?.removeFromSuperview()
+        let remaining = PageHost.shared.clients
+        PageHost.shared.clients.remove(ObjectIdentifier(self))
+        log("stop clients=\(PageHost.shared.clients.count) heldSnapshot=\(PageHost.shared.image != nil)")
+        if PageHost.shared.clients.isEmpty {
+            webView?.stopLoading()
+            webView?.navigationDelegate = nil
+            webView?.removeFromSuperview()
+            if PageHost.shared.webView === webView {
+                PageHost.shared.webView = nil
+                PageHost.shared.loadStarted = false
+            }
+        } else if let webView, webView.superview === self {
+            log("dedupe: moving the single web view off this screen, \(PageHost.shared.clients.count) still active")
+            PageHost.shared.holdOffscreen(webView)
+        }
+        _ = remaining
         webView = nil
         super.stopAnimation()
     }
 
+    @objc private func sharedFrameChanged() {
+        lastGoodImage = PageHost.shared.image
+        if lastGoodImage != nil {
+            hideStatus()
+        }
+        needsDisplay = true
+    }
+
     override func animateOneFrame() {
-        guard let webView, !pageIsLoading, !tickInFlight else { return }
-        tickInFlight = true
-        let token = generation
-        let finished = TickFlag()
-        let finish: (Any?, Error?) -> Void = { [weak self] result, error in
-            DispatchQueue.main.async {
-                guard let self, self.generation == token, !finished.value else { return }
-                finished.value = true
-                self.tickInFlight = false
-                self.noteTick(result: result, error: error)
+        if webView == nil {
+            if let image = PageHost.shared.image {
+                lastGoodImage = image
+                needsDisplay = true
             }
+            return
         }
-        webView.evaluateJavaScript(
-            """
-            (function () {
-              if (typeof window.greylineSaverTick === "function") return window.greylineSaverTick();
-              var side = document.getElementById("side");
-              return JSON.stringify({
-                chars: document.body ? document.body.innerText.length : 0,
-                weather: !!(side && side.querySelector(".stat")),
-                w: window.innerWidth,
-                h: window.innerHeight
-              });
-            })()
-            """
-        ) { result, error in
-            finish(result, error)
+        guard let webView, !pageIsLoading, !snapshotInFlight else { return }
+        if webView.superview == nil {
+            log("DISAPPEAR: web view was detached; re-attaching")
+            addSubview(webView)
+            layoutChrome()
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-            let error = NSError(
-                domain: "GreylineHub",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "the page stopped answering"]
-            )
-            finish(nil, error)
+        snapshotInFlight = true
+        let token = generation
+        webView.evaluateJavaScript("window.greylineSaverTick && window.greylineSaverTick()", completionHandler: nil)
+        let configuration = WKSnapshotConfiguration()
+        let size = webView.bounds.size
+        configuration.rect = CGRect(origin: .zero, size: size)
+        configuration.afterScreenUpdates = lastGoodImage == nil
+        webView.takeSnapshot(with: configuration) { [weak self] image, error in
+            DispatchQueue.main.async {
+                guard let self, self.generation == token else { return }
+                self.snapshotInFlight = false
+                self.noteSnapshot(image, error: error)
+            }
         }
     }
 
@@ -425,6 +483,13 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
         statusLabel.wantsLayer = true
         statusLabel.layer?.backgroundColor = background.cgColor
         addSubview(statusLabel)
+        snapshotView = NSImageView()
+        snapshotView.imageScaling = .scaleAxesIndependently
+        snapshotView.imageAlignment = .alignCenter
+        snapshotView.wantsLayer = true
+        snapshotView.layerContentsRedrawPolicy = .onSetNeedsDisplay
+        snapshotView.isHidden = true
+        addSubview(snapshotView)
     }
 
     private func adoptScreenSizeIfNeeded() {
@@ -445,7 +510,13 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
     private func layoutChrome() {
         adoptScreenSizeIfNeeded()
         let frame = webViewTargetFrame()
-        webView?.frame = frame
+        if PageHost.shared.image != nil, let webView {
+            let size = frame.size
+            webView.frame = NSRect(x: 0, y: -size.height - 30, width: max(size.width, 2), height: max(size.height, 2))
+        } else {
+            webView?.frame = frame
+        }
+        snapshotView?.frame = frame
         let pad = min(isPreviewMode ? 12 : 48, max(8, frame.width / 10))
         var labelFrame = frame.insetBy(dx: pad, dy: pad)
         if labelFrame.width < 40 || labelFrame.height < 40 {
@@ -453,6 +524,9 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
         }
         statusLabel.frame = labelFrame
         statusLabel.preferredMaxLayoutWidth = max(40, labelFrame.width)
+        if snapshotView?.isHidden == false {
+            addSubview(snapshotView)
+        }
         if !statusLabel.isHidden {
             addSubview(statusLabel)
             statusLabel.needsDisplay = true
@@ -489,8 +563,17 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
         let token = generation
         sawContent = false
         reloadCount = 0
-        blankStreak = 0
         let timeout = max(4, config.connectTimeoutSec)
+        if PageHost.shared.loadStarted {
+            log("dedupe: not loading a second web view, clients=\(PageHost.shared.clients.count)")
+            if let image = PageHost.shared.image {
+                lastGoodImage = image
+                hideStatus()
+                needsDisplay = true
+            }
+            return
+        }
+        PageHost.shared.loadStarted = true
         if let site = findPublishedSite() {
             loadLocalSite(site)
         } else {
@@ -570,7 +653,7 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
     }
 
     private func loadLocalSite(_ root: URL) {
-        siteHandler.root = root
+        PageHost.shared.handler.root = root
         let frame = webViewTargetFrame()
         if bounds.width < 2 || bounds.height < 2 {
             setFrameSize(frame.size)
@@ -733,7 +816,18 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
     }
 
     private func ensureWebView(frame: NSRect) -> WKWebView {
-        if let webView { return webView }
+        if let existing = PageHost.shared.webView {
+            webView = existing
+            log("dedupe: reusing the existing web view")
+            return existing
+        }
+        if PageHost.shared.creating, let existing = PageHost.shared.webView {
+            webView = existing
+            log("dedupe: web view creation already finished")
+            return existing
+        }
+        PageHost.shared.creating = true
+        defer { PageHost.shared.creating = false }
         let configuration = WKWebViewConfiguration()
         let script = WKUserScript(
             source: """
@@ -750,7 +844,7 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
             forMainFrameOnly: true
         )
         configuration.userContentController.addUserScript(script)
-        configuration.setURLSchemeHandler(siteHandler, forURLScheme: "greyline")
+        configuration.setURLSchemeHandler(PageHost.shared.handler, forURLScheme: "greyline")
         let web = WKWebView(frame: frame, configuration: configuration)
         web.navigationDelegate = self
         if #available(macOS 12.0, *) {
@@ -769,6 +863,8 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
         }
         addSubview(web)
         webView = web
+        PageHost.shared.webView = web
+        log("created the single web view, clients=\(PageHost.shared.clients.count)")
         layoutChrome()
         return web
     }
@@ -796,47 +892,84 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        log("WebContent process terminated")
-        handleBlank("WebContent process terminated")
-    }
-
-    private func noteTick(result: Any?, error: Error?) {
-        if let error {
-            blankStreak += 1
-            log("tick failed (\(blankStreak)): \(error.localizedDescription)")
-            if blankStreak >= 2 {
-                handleBlank(error.localizedDescription)
-            }
+        log("DISAPPEAR: WebContent process terminated heldSnapshot=\(lastGoodImage != nil)")
+        guard lastGoodImage == nil, reloadCount < 1 else {
+            log("not reloading; the held snapshot stays on screen")
             return
         }
-        let text = result as? String ?? ""
-        let chars = jsonInt(text, key: "chars") ?? 0
-        if chars > 40 {
-            if !sawContent {
-                log("page is drawing (\(chars) characters) \(text)")
-            }
-            sawContent = true
-            blankStreak = 0
-            hideStatus()
-            return
-        }
-        blankStreak += 1
-        if blankStreak >= 2 {
-            log("page has no text (\(chars) characters) \(text)")
-            handleBlank(sawContent ? "the page went blank after it had drawn" : "the page never drew")
-        }
-    }
-
-    private func handleBlank(_ reason: String) {
-        showStatus("Failed: \(reason)")
-        showStatus("macOS suspends a web view inside a screen saver. This build asks WebKit not to do that.")
-        guard reloadCount < 1, let webView else { return }
         reloadCount += 1
-        blankStreak = 0
-        showStatus("Reloading the page once.")
-        log("reloading after blank")
+        log("reloading once because no snapshot has been captured yet")
         pageIsLoading = true
         webView.reload()
+    }
+
+    private func noteSnapshot(_ image: NSImage?, error: Error?) {
+        let score = image.map(contentScore) ?? 0
+        if let error {
+            log("DISAPPEAR: snapshot error \(error.localizedDescription) held=\(lastGoodImage != nil)")
+        }
+        guard let image, score >= 8 else {
+            blankSnapshots += 1
+            log("DISAPPEAR: snapshot blank score=\(score) streak=\(blankSnapshots) held=\(lastGoodImage != nil) webHidden=\(webView?.isHidden ?? true)")
+            if lastGoodImage == nil, blankSnapshots >= 3 {
+                showStatus("The page has not produced a drawable frame.")
+            } else if lastGoodImage != nil {
+                showHeldFrame()
+            }
+            return
+        }
+        let first = lastGoodImage == nil
+        let recovered = blankSnapshots > 0
+        blankSnapshots = 0
+        lastGoodImage = image
+        PageHost.shared.image = image
+        sawContent = true
+        if first || recovered {
+            log("snapshot held \(Int(image.size.width))x\(Int(image.size.height)) score=\(score)")
+        }
+        showHeldFrame()
+        hideStatus()
+        NotificationCenter.default.post(name: .greylineFrame, object: nil)
+    }
+
+    private func showHeldFrame() {
+        guard let image = lastGoodImage, snapshotView != nil else { return }
+        snapshotView.image = image
+        snapshotView.isHidden = false
+        if let webView {
+            addSubview(webView)
+        }
+        addSubview(snapshotView)
+        snapshotView.needsDisplay = true
+        needsDisplay = true
+        displayIfNeeded()
+    }
+
+    private func contentScore(_ image: NSImage) -> Int {
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else {
+            return 0
+        }
+        let width = rep.pixelsWide
+        let height = rep.pixelsHigh
+        if width < 2 || height < 2 { return 0 }
+        var bright = 0
+        let stepX = max(1, width / 32)
+        let stepY = max(1, height / 18)
+        var y = 0
+        while y < height {
+            var x = 0
+            while x < width {
+                if let color = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) {
+                    if color.redComponent + color.greenComponent + color.blueComponent > 0.28 {
+                        bright += 1
+                    }
+                }
+                x += stepX
+            }
+            y += stepY
+        }
+        return bright
     }
 
     private func showStatus(_ line: String) {
@@ -878,16 +1011,6 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
         let short = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
         let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
         return "\(short) (\(build))"
-    }
-
-    private func jsonInt(_ json: String, key: String) -> Int? {
-        guard let data = json.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
-        }
-        if let number = object[key] as? Int { return number }
-        if let number = object[key] as? Double { return Int(number) }
-        return nil
     }
 
     /// BOOL-taking WebKit and AppKit setters are private. Skip them when the

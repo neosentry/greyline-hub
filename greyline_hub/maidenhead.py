@@ -11,7 +11,9 @@ class GridError(ValueError):
     pass
 
 
+# Fields are A–R (18). Subsquares are A–X (24).
 _FIELDS = "ABCDEFGHIJKLMNOPQR"
+_SUBS = "ABCDEFGHIJKLMNOPQRSTUVWX"
 
 
 def format_grid(grid: str) -> str:
@@ -50,10 +52,10 @@ def grid_to_latlon(grid: str) -> tuple[float, float]:
 
     if not (g[4].isalpha() and g[5].isalpha()):
         raise GridError(f"grid subsquare is invalid: {grid!r}")
+    if g[4].upper() not in _SUBS or g[5].upper() not in _SUBS:
+        raise GridError(f"grid subsquare is out of range: {grid!r}")
     sub_lon = (ord(g[4].upper()) - ord("A")) * (2.0 / 24.0)
     sub_lat = (ord(g[5].upper()) - ord("A")) * (1.0 / 24.0)
-    if g[4].upper() not in _FIELDS or g[5].upper() not in _FIELDS:
-        raise GridError(f"grid subsquare is out of range: {grid!r}")
     lon += sub_lon
     lat += sub_lat
     if len(g) == 6:
@@ -82,6 +84,9 @@ def latlon_to_grid(lat: float, lon: float, precision: int = 6) -> str:
         return grid
     lon_n %= 2
     lat_n %= 1
-    grid += _FIELDS[int(lon_n // (2.0 / 24.0))].lower()
-    grid += _FIELDS[int(lat_n // (1.0 / 24.0))].lower()
+    # 24 subsquares across a 2° × 1° square. Clamp so a value that lands
+    # exactly on the next boundary stays inside this square.
+    sub_lon = min(23, int(lon_n * 12.0))
+    sub_lat = min(23, int(lat_n * 24.0))
+    grid += _SUBS[sub_lon].lower() + _SUBS[sub_lat].lower()
     return grid

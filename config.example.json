@@ -4,8 +4,8 @@
   // install, unless GREYLINE_CONFIG or --config points somewhere else.
 
   "station": {
-    "callsign": "N0CALL",
-    "grid": "FN31pr",
+    "callsign": "K0JNM",
+    "grid": "EL87uu",
     // latitude/longitude override the grid when both are set.
     // longitude is positive east.
     "latitude": null,

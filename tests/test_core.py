@@ -67,6 +67,16 @@ class MaidenheadTests(unittest.TestCase):
         self.assertAlmostEqual(lat, 45.0)
         self.assertAlmostEqual(lon, -70.0)
 
+    def test_approximate_florida_point_is_el87uu(self):
+        # 27.85 N, 82.30 W. Subsquares run A–X, so this is past the old A–R limit.
+        self.assertEqual(latlon_to_grid(27.85, -82.30), "EL87uu")
+        lat, lon = grid_to_latlon("EL87uu")
+        self.assertAlmostEqual(lat, 27.854167, places=4)
+        self.assertAlmostEqual(lon, -82.291667, places=4)
+        self.assertEqual(latlon_to_grid(lat, lon), "EL87uu")
+        self.assertLess(abs(lat - 27.85), 0.025)
+        self.assertLess(abs(lon - (-82.30)), 0.05)
+
 
 class SolarTests(unittest.TestCase):
     def test_seasonal_declination(self):

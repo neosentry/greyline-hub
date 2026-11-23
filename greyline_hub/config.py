@@ -49,8 +49,8 @@ def _page(page_id: str, title: str, slug: str, panels: list[str], **extra) -> di
 
 DEFAULTS: dict = {
     "station": {
-        "callsign": "N0CALL",
-        "grid": "FN31pr",
+        "callsign": "K0JNM",
+        "grid": "EL87uu",
         "latitude": None,
         "longitude": None,
         "timezone": "America/New_York",
@@ -239,7 +239,7 @@ def resolve_station(cfg: dict) -> dict:
             grid_text = format_grid(grid) if grid else latlon_to_grid(lat, lon)
     except (GridError, TypeError, ValueError) as exc:
         raise ConfigError(str(exc)) from exc
-    call = str(station.get("callsign") or "N0CALL").strip().upper() or "N0CALL"
+    call = str(station.get("callsign") or "K0JNM").strip().upper() or "K0JNM"
     timezone = str(station.get("timezone") or "UTC").strip() or "UTC"
     return {
         "callsign": call,

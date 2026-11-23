@@ -67,6 +67,20 @@ function compact(value, digits) {
   return number.toFixed(digits).replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
 }
 
+function zoneLabel(date, timeZone) {
+  if (!timeZone) return "Local";
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      timeZoneName: "short",
+    }).formatToParts(date);
+    const name = parts.find((part) => part.type === "timeZoneName");
+    return name && name.value ? name.value : "Local";
+  } catch (err) {
+    return "Local";
+  }
+}
+
 function formatTime(date, timeZone) {
   const options = { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" };
   try {
@@ -192,8 +206,7 @@ function renderHeader(page, panels) {
 
   const clocks = el("div", "clocks");
   clocks.append(clockBlock("UTC", "utc", "utc-date"));
-  const localName = zone ? zone.split("/").pop().replace(/_/g, " ") : "Local";
-  clocks.append(clockBlock(localName, "local", "local-date"));
+  clocks.append(clockBlock(zoneLabel(new Date(), zone), "local", "local-date"));
   topEl.append(brand, stationEl, clocks);
   tick();
 }

@@ -14,7 +14,7 @@ That listens on port **8754** and serves the example pages at:
 
 Python 3.9 or newer. The standard library is enough; there is nothing to pip install.
 
-Copy `config.example.json` to `config.json` and set your callsign, Maidenhead grid, and timezone before you leave it running. Until you do, the example station `N0CALL` in `FN31pr` is what the map marks.
+Copy `config.example.json` to `config.json` before you leave it running. The example station is K0JNM in grid EL87uu (about 27.85° N, 82.30° W). Edit that block if the map should mark a different station.
 
 ## Choose a port
 
@@ -108,8 +108,8 @@ The whole window drifts a few pixels on `burn_in.period_sec` so a fixed dashboar
 
 ```json
 "station": {
-  "callsign": "N0CALL",
-  "grid": "FN31pr",
+  "callsign": "K0JNM",
+  "grid": "EL87uu",
   "timezone": "America/New_York"
 }
 ```

@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if used_example and not args.check:
         logging.getLogger("greyline").warning(
-            "using %s — copy it to config.json and set your callsign, grid, and port",
+            "using %s — copy it to config.json to keep local edits",
             path,
         )
     if args.check:

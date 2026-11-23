@@ -177,9 +177,11 @@ private struct ClientConfig: Codable {
 }
 
 @objc(GreylineHubView)
-final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
+public final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
     private var webView: WKWebView?
-    private let statusLabel = NSTextField(wrappingLabelWithString: "")
+    // Created in init after the first log line. A property initializer would
+    // run AppKit before any log, and a crash there leaves no trace.
+    private var statusLabel: NSTextField!
     private var config = ClientConfig.fallback
     private var sheet: NSWindow?
     private var primaryField: NSTextField?
@@ -199,19 +201,25 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
     private let isPreviewMode: Bool
 
     override init?(frame: NSRect, isPreview: Bool) {
+        SaverLog.write("init enter frame=\(Int(frame.width))x\(Int(frame.height)) preview=\(isPreview)")
         isPreviewMode = isPreview
         super.init(frame: frame, isPreview: isPreview)
+        SaverLog.write("init super.init returned")
         animationTimeInterval = 0.5
         configureLayer()
         installStatusLabel()
+        SaverLog.write("init done")
     }
 
     required init?(coder decoder: NSCoder) {
+        SaverLog.write("init(coder:) enter")
         isPreviewMode = false
         super.init(coder: decoder)
+        SaverLog.write("init(coder:) super.init returned")
         animationTimeInterval = 0.5
         configureLayer()
         installStatusLabel()
+        SaverLog.write("init(coder:) done")
     }
 
     /// Do not paint here. On macOS 26 and later, an opaque draw becomes the
@@ -331,6 +339,7 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
     override var isOpaque: Bool { false }
 
     private func installStatusLabel() {
+        statusLabel = NSTextField(wrappingLabelWithString: "")
         let background = NSColor(srgbRed: 0.03, green: 0.04, blue: 0.05, alpha: 1)
         statusLabel.textColor = NSColor(srgbRed: 0.93, green: 0.90, blue: 0.82, alpha: 1)
         statusLabel.font = NSFont.monospacedSystemFont(ofSize: isPreviewMode ? 11 : 22, weight: .medium)

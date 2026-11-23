@@ -194,6 +194,8 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
     private var blankStreak = 0
     private var pageIsLoading = false
     private var tickInFlight = false
+    private var didTryAdoptSize = false
+    private var lastLayoutLog = ""
     private let isPreviewMode: Bool
 
     override init?(frame: NSRect, isPreview: Bool) {
@@ -219,10 +221,12 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
     override func startAnimation() {
         super.startAnimation()
         let version = ProcessInfo.processInfo.operatingSystemVersion
-        log("start macOS \(version.majorVersion).\(version.minorVersion).\(version.patchVersion) preview=\(isPreviewMode) bundle=\(bundleVersion())")
+        log("start macOS \(version.majorVersion).\(version.minorVersion).\(version.patchVersion) preview=\(isPreviewMode) bundle=\(bundleVersion()) frame=\(Int(bounds.width))x\(Int(bounds.height))")
         log("log file \(SaverLog.filePath())")
+        didTryAdoptSize = false
+        adoptScreenSizeIfNeeded()
+        layoutChrome()
         config = loadConfig()
-        showStatus("Greyline Hub")
         showStatus("Log: \(SaverLog.filePath())")
         resolveAndLoad()
     }
@@ -283,7 +287,9 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
                 log("disabled window occlusion detection")
             }
         }
+        adoptScreenSizeIfNeeded()
         layoutChrome()
+        log("moved to window frame=\(Int(bounds.width))x\(Int(bounds.height))")
     }
 
     override func layout() {
@@ -316,59 +322,86 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
 
     private func configureLayer() {
         wantsLayer = true
-        layerContentsRedrawPolicy = .never
+        // .never left the AppKit status label unpainted. The web view is a
+        // subview, and draw(_:) stays empty so a redraw does not cover it.
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
         layer?.backgroundColor = NSColor(srgbRed: 0.03, green: 0.04, blue: 0.05, alpha: 1).cgColor
     }
 
+    override var isOpaque: Bool { false }
+
     private func installStatusLabel() {
+        let background = NSColor(srgbRed: 0.03, green: 0.04, blue: 0.05, alpha: 1)
         statusLabel.textColor = NSColor(srgbRed: 0.93, green: 0.90, blue: 0.82, alpha: 1)
-        statusLabel.font = NSFont.monospacedSystemFont(ofSize: isPreviewMode ? 11 : 20, weight: .regular)
+        statusLabel.font = NSFont.monospacedSystemFont(ofSize: isPreviewMode ? 11 : 22, weight: .medium)
         statusLabel.alignment = .left
         statusLabel.maximumNumberOfLines = 0
         statusLabel.lineBreakMode = .byWordWrapping
-        statusLabel.drawsBackground = false
+        statusLabel.drawsBackground = true
+        statusLabel.backgroundColor = background
         statusLabel.isBezeled = false
         statusLabel.isEditable = false
         statusLabel.isSelectable = false
+        statusLabel.wantsLayer = true
+        statusLabel.layer?.backgroundColor = background.cgColor
         addSubview(statusLabel)
     }
 
+    private func adoptScreenSizeIfNeeded() {
+        guard !didTryAdoptSize, bounds.width < 2 || bounds.height < 2 else { return }
+        let size = resolvedScreenSize()
+        guard size.width > 2, size.height > 2, size != bounds.size else { return }
+        didTryAdoptSize = true
+        log("adopting screen size \(Int(size.width))x\(Int(size.height)) in place of \(Int(bounds.width))x\(Int(bounds.height))")
+        setFrameSize(size)
+    }
+
+    private func resolvedScreenSize() -> NSSize {
+        let size = window?.screen?.frame.size ?? NSScreen.main?.frame.size ?? .zero
+        if size.width > 2, size.height > 2 { return size }
+        return NSSize(width: 1280, height: 800)
+    }
+
     private func layoutChrome() {
+        adoptScreenSizeIfNeeded()
         let frame = webViewTargetFrame()
         webView?.frame = frame
-        let pad: CGFloat = isPreviewMode ? 12 : 40
-        statusLabel.frame = bounds.insetBy(dx: pad, dy: pad)
+        let pad = min(isPreviewMode ? 12 : 48, max(8, frame.width / 10))
+        var labelFrame = frame.insetBy(dx: pad, dy: pad)
+        if labelFrame.width < 40 || labelFrame.height < 40 {
+            labelFrame = frame
+        }
+        statusLabel.frame = labelFrame
+        statusLabel.preferredMaxLayoutWidth = max(40, labelFrame.width)
         if !statusLabel.isHidden {
             addSubview(statusLabel)
+            statusLabel.needsDisplay = true
+            statusLabel.displayIfNeeded()
+        }
+        let note = "layout web=\(Int(frame.width))x\(Int(frame.height)) label=\(Int(labelFrame.width))x\(Int(labelFrame.height)) hidden=\(statusLabel.isHidden)"
+        if note != lastLayoutLog {
+            lastLayoutLog = note
+            log(note)
         }
     }
 
-    /// Preview uses the thumbnail bounds. A full-screen saver clamps to the
-    /// display's point size so a backing-pixel frame cannot blow the page up
-    /// and leave only a dark corner on screen.
+    /// Preview uses the thumbnail bounds. A full-screen saver uses the view's
+    /// bounds once they are real, and the display size when the host still
+    /// has the view at 0×0.
     private func webViewTargetFrame() -> NSRect {
         if isPreviewMode, bounds.width > 2, bounds.height > 2 {
             return bounds
         }
-        let screenSize = window?.screen?.frame.size
-            ?? NSScreen.main?.frame.size
-            ?? .zero
-        if screenSize.width > 2, screenSize.height > 2 {
-            if bounds.width > 2, bounds.height > 2 {
-                return NSRect(
-                    x: 0,
-                    y: 0,
-                    width: min(bounds.width, screenSize.width),
-                    height: min(bounds.height, screenSize.height)
-                )
-            }
-            return NSRect(origin: .zero, size: screenSize)
+        let screen = resolvedScreenSize()
+        if bounds.width > 2, bounds.height > 2 {
+            return NSRect(
+                x: 0,
+                y: 0,
+                width: min(bounds.width, screen.width),
+                height: min(bounds.height, screen.height)
+            )
         }
-        if bounds.width < 2 || bounds.height < 2 {
-            let fallback = NSScreen.main?.frame.size ?? NSSize(width: 1280, height: 800)
-            return NSRect(origin: .zero, size: fallback)
-        }
-        return bounds
+        return NSRect(origin: .zero, size: screen)
     }
 
     private func resolveAndLoad() {
@@ -656,9 +689,12 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
         if statusLines.count > 14 {
             statusLines.removeFirst(statusLines.count - 14)
         }
-        statusLabel.stringValue = statusLines.joined(separator: "\n")
+        statusLabel.stringValue = "Greyline Hub \(bundleVersion())\n" + statusLines.joined(separator: "\n")
         statusLabel.isHidden = false
+        layoutChrome()
         addSubview(statusLabel)
+        statusLabel.needsDisplay = true
+        statusLabel.displayIfNeeded()
     }
 
     private func hideStatus() {

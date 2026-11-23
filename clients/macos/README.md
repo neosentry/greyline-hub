@@ -41,7 +41,7 @@ xattr -dr com.apple.quarantine ~/Library/Screen\ Savers/GreylineHub.saver
 
 Open System Settings → Wallpaper → Screen Saver (on macOS 26 and 27 the
 screen saver list lives inside Wallpaper) and choose Greyline Hub. This build
-is version 0.1.1 (bundle version 2). `./build.sh` needs Xcode or the Command
+is version 0.1.2 (bundle version 3). The first line on screen is that version. `./build.sh` needs Xcode or the Command
 Line Tools. The deployment target is macOS 14, so the same binary runs on
 Sonoma and later.
 
@@ -58,24 +58,21 @@ of the web view. The status line is AppKit text, so it stays readable when
 the web view is empty. It says what it is trying:
 
 ```
-Greyline Hub
+Greyline Hub 0.1.2 (3)
 Trying home server http://greyline.local:8754/
 Shack page: space weather, HF bands, map, and spots.
 Home server did not answer: The request timed out.
 Trying this Mac http://127.0.0.1:8754/
 ```
 
-A failure stays on that screen with the reason. It does not go back to an
-empty black frame.
+The version is always the first line, including while the dashboard is up
+only if the page has not drawn yet. Once the shack page is drawing, the text
+hides so the dashboard can fill the screen. A failure brings the text back
+and leaves it there.
 
-If you still see only black, with no status text, the running host is often
-still the previous bundle: `legacyScreenSaver` keeps the old binary mapped
-until that process exits. The new log's first line contains `bundle=0.1.1 (2)`.
-If that line is missing, the new saver is not the one on screen. There is a
-second way the text can stay invisible even in 0.1.1: the view's layer is set
-not to redraw, and the host sometimes gives the saver a 0×0 frame, so the
-AppKit label never gets a visible rect while the web view (sized from the
-display) still flashes once.
+If the first line is not `Greyline Hub 0.1.2 (3)`, the running host is still
+an older bundle. `legacyScreenSaver` keeps the previous binary mapped until
+that process exits. The log's first line contains `bundle=0.1.2 (3)`.
 
 The same lines are appended to a log file. The on-screen text includes the
 path. These are the places to look, because the sandbox may redirect `~/Library`:

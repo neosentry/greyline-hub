@@ -152,3 +152,24 @@ echo "  rm -rf ~/Library/Screen\\ Savers/GreylineHub.saver"
 echo "  cp -R build/GreylineHub.saver ~/Library/Screen\\ Savers/"
 echo "  xattr -dr com.apple.quarantine ~/Library/Screen\\ Savers/GreylineHub.saver"
 echo "Then run ./diagnose.sh and send the output if the screen stays blank."
+
+# WallpaperAgent loads /Library/Screen Savers before the home-folder copy.
+# An old root-owned bundle there is what the screen actually runs.
+SYSTEM_SAVER="/Library/Screen Savers/GreylineHub.saver"
+if [ -d "$SYSTEM_SAVER" ]; then
+  plist="$SYSTEM_SAVER/Contents/Info.plist"
+  short="?"
+  build="?"
+  if [ -f "$plist" ]; then
+    short="$(plutil -extract CFBundleShortVersionString raw -o - "$plist" 2>/dev/null || true)"
+    build="$(plutil -extract CFBundleVersion raw -o - "$plist" 2>/dev/null || true)"
+    [ -n "$short" ] || short="?"
+    [ -n "$build" ] || build="?"
+  fi
+  echo
+  echo "WARNING: macOS loads this system-wide saver instead of ~/Library/Screen Savers/GreylineHub.saver:"
+  echo "  ${SYSTEM_SAVER}"
+  echo "  version ${short} (${build})"
+  echo "Remove it with:"
+  echo "  sudo rm -rf /Library/Screen\\ Savers/GreylineHub.saver"
+fi

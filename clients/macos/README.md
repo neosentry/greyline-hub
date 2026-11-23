@@ -45,9 +45,19 @@ xattr -dr com.apple.quarantine ~/Library/Screen\ Savers/GreylineHub.saver
 ./diagnose.sh
 ```
 
-`./diagnose.sh` prints the principal class, architectures, linked Swift
-libraries, the code signature, and the last few minutes of unified-log lines
-for `com.greylinehub.screensaver`. Paste that output if the screen stays
+`./build.sh` looks for `/Library/Screen Savers/GreylineHub.saver`. WallpaperAgent
+loads that system-wide bundle before the copy in your home folder. An old
+root-owned 0.1.0 there is what ran while newer builds sat unused in
+`~/Library/Screen Savers`. When that directory exists, the script prints:
+
+```bash
+sudo rm -rf /Library/Screen\ Savers/GreylineHub.saver
+```
+
+Run that, then install the home-folder copy again. `./diagnose.sh` prints the
+version of both locations, plus the principal class, architectures, linked
+Swift libraries, the code signature, and the last few minutes of unified-log
+lines for `com.greylinehub.screensaver`. Paste that output if the screen stays
 blank.
 
 Open System Settings → Wallpaper → Screen Saver (on macOS 26 and 27 the
@@ -71,9 +81,10 @@ If that file is missing, the clocks, the Florida station, and the greyline
 still draw, and the footer says the site was not found.
 
 The footer should read `Greyline Hub 0.1.7 (8) · native`. If it does not, the
-running host is still an older bundle. `legacyScreenSaver` keeps the previous
-binary mapped until that process exits. Quit System Settings and kill
-`legacyScreenSaver` before copying the new bundle.
+running host is still an older bundle. Check `/Library/Screen Savers` as well
+as your home folder: macOS loads the system-wide saver first. `legacyScreenSaver`
+keeps the previous binary mapped until that process exits. Quit System Settings
+and kill `legacyScreenSaver` before copying the new bundle.
 
 Logs use `os_log` with subsystem `com.greylinehub.screensaver` and a public
 `%{public}@` string that begins with `greyline`. `./diagnose.sh` prints the

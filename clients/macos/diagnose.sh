@@ -12,6 +12,42 @@ section() {
   printf '\n===== %s =====\n' "$1"
 }
 
+bundle_version() {
+  local plist="$1/Contents/Info.plist"
+  local short build
+  if [ ! -f "$plist" ]; then
+    echo "no Info.plist"
+    return
+  fi
+  short="$(plutil -extract CFBundleShortVersionString raw -o - "$plist" 2>/dev/null || true)"
+  build="$(plutil -extract CFBundleVersion raw -o - "$plist" 2>/dev/null || true)"
+  [ -n "$short" ] || short="?"
+  [ -n "$build" ] || build="?"
+  echo "${short} (${build})"
+}
+
+report_copy() {
+  local path="$1"
+  local label="$2"
+  echo "-- ${label} --"
+  echo "$path"
+  if [ -d "$path" ]; then
+    echo "present  version $(bundle_version "$path")"
+    ls -ld "$path" 2>/dev/null || true
+  else
+    echo "not installed"
+  fi
+}
+
+section "installed copies"
+report_copy "${HOME}/Library/Screen Savers/GreylineHub.saver" "home (per user)"
+report_copy "/Library/Screen Savers/GreylineHub.saver" "system (all users)"
+if [ -d "/Library/Screen Savers/GreylineHub.saver" ]; then
+  echo "WallpaperAgent loads the system-wide bundle before the one in your home folder."
+  echo "Remove it with:"
+  echo "  sudo rm -rf /Library/Screen\\ Savers/GreylineHub.saver"
+fi
+
 section "path"
 printf '%s\n' "$SAVER"
 if [ ! -d "$SAVER" ]; then

@@ -1,0 +1,12 @@
+land.geojson
+  Natural Earth 1:110m physical land, public domain.
+  https://www.naturalearthdata.com/
+  Packaged from https://github.com/martynafford/natural-earth-geojson
+  Coordinates rounded to 2 decimal degrees for this dashboard.
+
+cty.dat
+  Amateur-radio country file maintained by Jim Reisert, AD1C.
+  https://www.country-files.com/cty/cty.dat
+  The file stores longitude positive west. Greyline Hub converts it to
+  positive east when it plots a station. Replace this copy to update it.
+  Snapshot taken 2026-11-22.

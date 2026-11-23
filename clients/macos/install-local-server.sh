@@ -82,7 +82,7 @@ cat > "$PLIST" <<EOF
     <string>--port</string>
     <string>${PORT}</string>
     <string>--publish</string>
-    <string>$(xml_escape "${HOME}/Library/Containers/com.apple.ScreenSaver.Engine.legacyScreenSaver/Data/Library/Application Support/GreylineHub/site")</string>
+    <string>$(xml_escape "${HOME}/Library/Screen Savers/GreylineHub-site")</string>
   </array>
   <key>WorkingDirectory</key>
   <string>$(xml_escape "$ROOT")</string>

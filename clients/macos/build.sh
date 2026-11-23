@@ -30,30 +30,51 @@ relink_swift() {
       @rpath/libswift*|@rpath/libswiftCompatibility*)
         base="$(basename "$dep")"
         if [ -f "/usr/lib/swift/${base}" ]; then
-          install_name_tool -change "$dep" "/usr/lib/swift/${base}" "$bin"
+          if ! install_name_tool -change "$dep" "/usr/lib/swift/${base}" "$bin"; then
+            echo "build.sh: install_name_tool failed for ${dep}" >&2
+            return 1
+          fi
         elif [ -f "${TOOLCHAIN}/${base}" ]; then
           dest="$ROOT/Frameworks/${base}"
           cp -f "${TOOLCHAIN}/${base}" "$dest"
           chmod 755 "$dest"
-          install_name_tool -change "$dep" "@loader_path/../Frameworks/${base}" "$bin"
+          if ! install_name_tool -change "$dep" "@loader_path/../Frameworks/${base}" "$bin"; then
+            echo "build.sh: install_name_tool failed for ${dep}" >&2
+            return 1
+          fi
         else
-          echo "warning: cannot resolve ${dep}" >&2
+          echo "build.sh: cannot resolve ${dep}" >&2
+          return 1
         fi
         ;;
     esac
   done < <(otool -L "$bin" | awk 'NR > 1 { print $1 }')
 }
 
+# Print the command, then run it. Return its status. Do not rely on set -e:
+# macOS /bin/bash 3.2 ignores set -e for an entire function called from if.
+run_cmd() {
+  printf '+'
+  printf ' %q' "$@"
+  printf '\n'
+  "$@"
+}
+
 build_arch() {
   local arch="$1"
   local obj="$TMP/load-${arch}.o"
-  xcrun clang -c Sources/GreylineHubLoad.m \
+  local out="$TMP/GreylineHub-${arch}"
+  if ! run_cmd xcrun clang -c Sources/GreylineHubLoad.m \
     -target "${arch}-apple-macosx${MIN}" \
     -isysroot "$SDK" \
     -fobjc-arc \
     -O2 \
     -o "$obj"
-  swiftc \
+  then
+    echo "build.sh: clang failed for ${arch}. Stop this slice." >&2
+    return 1
+  fi
+  if ! run_cmd swiftc \
     -sdk "$SDK" \
     -target "${arch}-apple-macosx${MIN}" \
     -framework Cocoa \
@@ -65,33 +86,41 @@ build_arch() {
     -Xlinker -bundle \
     -Xlinker -rpath -Xlinker /usr/lib/swift \
     -Xlinker -rpath -Xlinker @loader_path/../Frameworks \
-    -o "$TMP/GreylineHub-${arch}" \
+    -o "$out" \
     Sources/GreylineHubView.swift \
     "$obj"
-  relink_swift "$TMP/GreylineHub-${arch}"
+  then
+    echo "build.sh: swiftc failed for ${arch}. Stop this slice." >&2
+    return 1
+  fi
+  if [ ! -f "$out" ]; then
+    echo "build.sh: swiftc exited 0 but did not write ${out}" >&2
+    return 1
+  fi
+  if ! relink_swift "$out"; then
+    echo "build.sh: could not retarget Swift libraries in ${out}" >&2
+    return 1
+  fi
 }
 
-HOST="$(uname -m)"
-BUILT=()
-for arch in "$HOST" arm64 x86_64; do
-  case " ${BUILT[*]-} " in
-    *" $arch "*) continue ;;
-  esac
-  if build_arch "$arch"; then
-    BUILT+=("$arch")
-  else
-    echo "skipping $arch" >&2
-  fi
-done
-
-if [ "${#BUILT[@]}" -eq 0 ]; then
-  echo "swiftc produced no binary" >&2
+echo "build.sh: compiling required arm64 slice"
+if ! build_arch arm64; then
+  echo "build.sh: arm64 build failed. Not running lipo." >&2
   exit 1
 fi
-if [ "${#BUILT[@]}" -eq 1 ]; then
-  cp "$TMP/GreylineHub-${BUILT[0]}" "$ROOT/MacOS/GreylineHub"
+BUILT=(arm64)
+
+echo "build.sh: compiling optional x86_64 slice"
+if build_arch x86_64; then
+  BUILT+=(x86_64)
 else
-  lipo -create "${BUILT[@]/#/$TMP/GreylineHub-}" -output "$ROOT/MacOS/GreylineHub"
+  echo "build.sh: x86_64 slice did not build. Continuing with arm64 only." >&2
+fi
+
+if [ "${#BUILT[@]}" -eq 1 ]; then
+  cp "$TMP/GreylineHub-arm64" "$ROOT/MacOS/GreylineHub"
+else
+  run_cmd lipo -create "$TMP/GreylineHub-arm64" "$TMP/GreylineHub-x86_64" -output "$ROOT/MacOS/GreylineHub"
 fi
 
 cp Support/Info.plist "$ROOT/Info.plist"

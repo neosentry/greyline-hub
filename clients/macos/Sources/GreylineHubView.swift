@@ -246,7 +246,7 @@ private struct ClientConfig: Codable {
 }
 
 @objc(GreylineHubView)
-public final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
+final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
     private var webView: WKWebView?
     private let siteHandler = LocalSiteHandler()
     private var loadedLocalFile = false
@@ -532,24 +532,27 @@ public final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
 
     private func publishedSiteCandidates() -> [URL] {
         var urls: [URL] = []
+        let bundleDir = Bundle(for: GreylineHubView.self).bundleURL.deletingLastPathComponent()
+        urls.append(bundleDir.appendingPathComponent("GreylineHub-site", isDirectory: true))
+        for home in realHomeDirectories() {
+            urls.append(home.appendingPathComponent("Library/Screen Savers/GreylineHub-site", isDirectory: true))
+        }
+        // Only useful if Python was given Full Disk Access and wrote the container.
         let container = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
         urls.append(container.appendingPathComponent("Library/Application Support/GreylineHub/site", isDirectory: true))
-        if let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            urls.append(support.appendingPathComponent("GreylineHub/site", isDirectory: true))
+        return urls
+    }
+
+    /// Homes that still point at /Users/<name> inside the screen-saver sandbox.
+    /// NSHomeDirectory() is the container, which the server is not allowed to fill.
+    private func realHomeDirectories() -> [URL] {
+        var urls: [URL] = []
+        if let pwd = getpwuid(getuid()), let dir = pwd.pointee.pw_dir {
+            urls.append(URL(fileURLWithPath: String(cString: dir), isDirectory: true))
         }
+        urls.append(FileManager.default.homeDirectoryForCurrentUser)
         if let env = getenv("HOME") {
-            let home = URL(fileURLWithPath: String(cString: env), isDirectory: true)
-            for name in [
-                "com.apple.ScreenSaver.Engine.legacyScreenSaver",
-                "com.apple.ScreenSaver.Engine.legacyScreenSaver-arm64",
-                "com.apple.ScreenSaver.Engine.legacyScreenSaver-x86_64",
-            ] {
-                urls.append(home.appendingPathComponent(
-                    "Library/Containers/\(name)/Data/Library/Application Support/GreylineHub/site",
-                    isDirectory: true
-                ))
-            }
-            urls.append(home.appendingPathComponent("Library/Application Support/GreylineHub/site", isDirectory: true))
+            urls.append(URL(fileURLWithPath: String(cString: env), isDirectory: true))
         }
         return urls
     }

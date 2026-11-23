@@ -180,10 +180,10 @@ class Site:
             try:
                 assert_publish_directory(directory)
                 self._write_tree(directory, cfg)
-            except PublishError as exc:
+            except (PublishError, OSError) as exc:
                 import logging
 
-                logging.getLogger("greyline").error("%s", exc)
+                logging.getLogger("greyline").error("skipping publish to %s: %s", directory, exc)
 
     def write_status(self, status: dict) -> None:
         body = json.dumps(status, separators=(",", ":")).encode("utf-8")

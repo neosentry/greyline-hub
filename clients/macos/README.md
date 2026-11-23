@@ -46,7 +46,7 @@ blank and no log file appears.
 
 Open System Settings → Wallpaper → Screen Saver (on macOS 26 and 27 the
 screen saver list lives inside Wallpaper) and choose Greyline Hub. This build
-is version 0.1.4 (bundle version 5). The first line on screen is that version. `./build.sh` needs Xcode or the Command
+is version 0.1.5 (bundle version 6). The first line on screen is that version. `./build.sh` needs Xcode or the Command
 Line Tools. The deployment target is macOS 14, so the same binary runs on
 Sonoma and later.
 
@@ -63,7 +63,7 @@ of the web view. The status line is AppKit text, so it stays readable when
 the web view is empty. It says what it is trying:
 
 ```
-Greyline Hub 0.1.4 (5)
+Greyline Hub 0.1.5 (6)
 Trying home server http://greyline.local:8754/
 Shack page: space weather, HF bands, map, and spots.
 Home server did not answer: The request timed out.
@@ -75,7 +75,7 @@ only if the page has not drawn yet. Once the shack page is drawing, the text
 hides so the dashboard can fill the screen. A failure brings the text back
 and leaves it there.
 
-If the first line is not `Greyline Hub 0.1.4 (5)`, the running host is still
+If the first line is not `Greyline Hub 0.1.5 (6)`, the running host is still
 an older bundle. `legacyScreenSaver` keeps the previous binary mapped until
 that process exits. The first log line is `constructor: GreylineHub image mapped`.
 `log stream` only shows it if you ask for public default messages:
@@ -93,9 +93,17 @@ ls -l ~/Library/Containers/com.apple.ScreenSaver.Engine.legacyScreenSaver/Data/L
 
 The sandbox also blocks HTTP, including `127.0.0.1`. Both probes timing out
 at the same budget with zero bytes sent is that restriction, not a slow
-server. 0.1.4 reads the shack page from disk instead. The Mac's Greyline Hub
-process writes that copy itself. Restart it after you pull, or reinstall the
-LaunchAgent with the path of your clone.
+server. 0.1.5 reads the shack page from
+`~/Library/Screen Savers/GreylineHub-site`. That directory sits next to the
+`.saver` bundles, which the screen-saver sandbox is allowed to read, and it
+is not inside another app's container, so the unsandboxed Python process is
+allowed to write it. Writing into
+`~/Library/Containers/com.apple.ScreenSaver.Engine.legacyScreenSaver` is
+blocked by macOS (TCC) and is not required. If a future OS stops the saver
+from reading `~/Library/Screen Savers`, grant Full Disk Access to the
+`python3` that runs Greyline Hub and set `--publish` to the container path.
+That is a fallback, not the default. Restart the server after you pull, or
+reinstall the LaunchAgent with the path of your clone.
 
 The same lines are appended to a log file. The on-screen text includes the
 path. These are the places to look, because the sandbox may redirect `~/Library`:

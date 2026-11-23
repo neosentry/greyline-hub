@@ -61,6 +61,12 @@ class SiteTests(unittest.TestCase):
             self.assertFalse((publish / "night").exists())
             self.assertTrue((publish / "notes" / "index.html").is_file())
 
+            blocked = tmp_path / "not-a-directory"
+            blocked.write_text("x")
+            guarded = Site(tmp_path / "runtime-2", blocked / "site")
+            guarded.rebuild(cfg, force=True)
+            self.assertTrue((tmp_path / "runtime-2" / "index.html").is_file())
+
     def test_custom_port_base_path_and_stale_status(self):
         cfg = prepare(
             {

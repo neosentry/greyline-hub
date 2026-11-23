@@ -32,26 +32,22 @@ def lan_ip() -> str | None:
 
 
 def screensaver_publish_dirs() -> list[Path]:
-    """Folders the macOS screen saver can read without using the network.
+    """Where the unsandboxed server can write and legacyScreenSaver can read.
 
-    legacyScreenSaver's sandbox blocks outgoing connections, including
-    127.0.0.1. It can read its own container, so the unsandboxed server
-    writes a copy of the site there.
+    The screen-saver host is not allowed to open sockets, including
+    127.0.0.1. It is also not a place another process may write: macOS
+    container protection (TCC) rejects creating files under
+    ``~/Library/Containers/com.apple.ScreenSaver.Engine.legacyScreenSaver``.
+
+    The host is allowed to read ``~/Library/Screen Savers`` because that is
+    where it loads ``.saver`` bundles. A sibling folder there is writable by
+    the user's Python process and readable by the saver. Full Disk Access for
+    Python would let it write the container instead; that is a fallback, not
+    the default.
     """
     if sys.platform != "darwin":
         return []
-    home = Path.home()
-    names = (
-        "com.apple.ScreenSaver.Engine.legacyScreenSaver",
-        "com.apple.ScreenSaver.Engine.legacyScreenSaver-arm64",
-        "com.apple.ScreenSaver.Engine.legacyScreenSaver-x86_64",
-    )
-    folders = [
-        home / "Library/Containers" / name / "Data/Library/Application Support/GreylineHub/site"
-        for name in names
-    ]
-    folders.append(home / "Library/Application Support/GreylineHub/site")
-    return folders
+    return [Path.home() / "Library/Screen Savers/GreylineHub-site"]
 
 
 def runtime_dir(cfg: dict) -> Path:

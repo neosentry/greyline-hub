@@ -68,6 +68,15 @@ Trying this Mac http://127.0.0.1:8754/
 A failure stays on that screen with the reason. It does not go back to an
 empty black frame.
 
+If you still see only black, with no status text, the running host is often
+still the previous bundle: `legacyScreenSaver` keeps the old binary mapped
+until that process exits. The new log's first line contains `bundle=0.1.1 (2)`.
+If that line is missing, the new saver is not the one on screen. There is a
+second way the text can stay invisible even in 0.1.1: the view's layer is set
+not to redraw, and the host sometimes gives the saver a 0×0 frame, so the
+AppKit label never gets a visible rect while the web view (sized from the
+display) still flashes once.
+
 The same lines are appended to a log file. The on-screen text includes the
 path. These are the places to look, because the sandbox may redirect `~/Library`:
 
@@ -98,6 +107,18 @@ reliable way to keep the local server up:
 ```bash
 cd clients/macos
 ./install-local-server.sh ~/greyline-hub 8754
+```
+
+Run that in Terminal.app on the Mac. Over SSH, `launchctl bootstrap gui/…`
+fails with `Bootstrap failed: 125: Domain does not support specified action`
+because that domain only exists in a graphical login. The script detects that,
+leaves the plist in `~/Library/LaunchAgents`, and tells you to rerun it on the
+console. It also waits for `bootout` to finish, retries bootstrap, and falls
+back to `launchctl load -w`. It prints success only after
+`http://127.0.0.1:8754/api/health` answers.
+
+```bash
+./uninstall-local-server.sh
 ```
 
 Point the secondary URL at `http://127.0.0.1:8754/` (the shack page) and you

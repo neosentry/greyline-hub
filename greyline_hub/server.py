@@ -24,7 +24,7 @@ _TYPES = {
 }
 
 
-def make_handler(site_dir: Path, base_path: str):
+def make_handler(site_dir: Path, base_path: str, hooks=None):
     root = site_dir.resolve()
     base = base_path.rstrip("/")
 
@@ -37,16 +37,31 @@ def make_handler(site_dir: Path, base_path: str):
         def do_HEAD(self):  # noqa: N802 - stdlib name
             self._serve(head_only=True)
 
-        def _serve(self, head_only: bool = False) -> None:
-            path = unquote(urlsplit(self.path).path)
+        def do_POST(self):  # noqa: N802 - stdlib name
+            path = self._strip(unquote(urlsplit(self.path).path))
+            if path is None:
+                self._send(404, b"not found\n", "text/plain; charset=utf-8", False)
+                return
+            if hooks is not None and hooks.handle(self, "POST", path):
+                return
+            self._send(404, b"not found\n", "text/plain; charset=utf-8", False)
+
+        def _strip(self, path: str) -> str | None:
             if base:
                 if path == base:
-                    path = "/"
-                elif path.startswith(base + "/"):
-                    path = path[len(base):] or "/"
-                else:
-                    self._send(404, b"not found\n", "text/plain; charset=utf-8", head_only)
-                    return
+                    return "/"
+                if path.startswith(base + "/"):
+                    return path[len(base):] or "/"
+                return None
+            return path
+
+        def _serve(self, head_only: bool = False) -> None:
+            path = self._strip(unquote(urlsplit(self.path).path))
+            if path is None:
+                self._send(404, b"not found\n", "text/plain; charset=utf-8", head_only)
+                return
+            if hooks is not None and hooks.handle(self, "HEAD" if head_only else "GET", path, head_only):
+                return
             if path in ("/api/health", "/health.json"):
                 target = root / "health.json"
                 if target.is_file():
@@ -95,8 +110,8 @@ def make_handler(site_dir: Path, base_path: str):
 
 
 class HubServer:
-    def __init__(self, host: str, port: int, base_path: str, site_dir: Path):
-        handler = make_handler(site_dir, base_path)
+    def __init__(self, host: str, port: int, base_path: str, site_dir: Path, hooks=None):
+        handler = make_handler(site_dir, base_path, hooks)
         try:
             self.httpd = ThreadingHTTPServer((host, port), handler)
         except OSError as exc:

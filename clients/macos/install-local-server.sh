@@ -21,11 +21,50 @@ if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; th
 fi
 
 ROOT="$(cd "$ROOT" && pwd)"
-PYTHON="$(command -v python3)"
+# LaunchAgents do not see a shell PATH. Prefer Homebrew, which is python.org
+# builds such as 3.14 on Apple Silicon and Intel.
+if [ -x /opt/homebrew/bin/python3 ]; then
+  PYTHON="/opt/homebrew/bin/python3"
+elif [ -x /usr/local/bin/python3 ]; then
+  PYTHON="/usr/local/bin/python3"
+else
+  PYTHON="$(command -v python3 || true)"
+fi
 if [ -z "$PYTHON" ]; then
-  echo "python3 was not found on PATH" >&2
+  echo "python3 was not found. Install it with Homebrew or the python.org installer." >&2
   exit 1
 fi
+
+if [ ! -f "$ROOT/config.json" ]; then
+  cp "$ROOT/config.example.json" "$ROOT/config.json"
+  echo "Created $ROOT/config.json from the example."
+fi
+if [ "$#" -ge 2 ]; then
+  "$PYTHON" - "$ROOT" "$PORT" <<'PY'
+import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from greyline_hub.config import strip_json_comments
+from greyline_hub.config_api import save_config_file
+path = Path(sys.argv[1]) / "config.json"
+raw = json.loads(strip_json_comments(path.read_text(encoding="utf-8")))
+raw.setdefault("server", {})["port"] = int(sys.argv[2])
+raw["server"].setdefault("enabled", True)
+save_config_file(path, raw)
+PY
+fi
+PORT="$("$PYTHON" - "$ROOT" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from greyline_hub.config import load_config
+cfg, _, _ = load_config(Path(sys.argv[1]) / "config.json")
+port = int(cfg["server"]["port"] or 8754)
+if port < 1 or port > 65535:
+    port = 8754
+print(port)
+PY
+)"
 
 UID_NUM="$(id -u)"
 DOMAIN="gui/${UID_NUM}"
@@ -79,10 +118,6 @@ cat > "$PLIST" <<EOF
   <array>
     <string>$(xml_escape "$PYTHON")</string>
     <string>$(xml_escape "$ROOT")/greyline-hub</string>
-    <string>--port</string>
-    <string>${PORT}</string>
-    <string>--publish</string>
-    <string>$(xml_escape "${HOME}/Library/Screen Savers/GreylineHub-site")</string>
   </array>
   <key>WorkingDirectory</key>
   <string>$(xml_escape "$ROOT")</string>
@@ -154,6 +189,7 @@ echo "Waiting for http://127.0.0.1:${PORT}/api/health"
 for ((i = 1; i <= 40; i++)); do
   if port_answers && job_running; then
     echo "LaunchAgent is running. Shack page: http://127.0.0.1:${PORT}/"
+    echo "Configuration: http://127.0.0.1:${PORT}/config/"
     echo "Log: ${LOG}"
     exit 0
   fi

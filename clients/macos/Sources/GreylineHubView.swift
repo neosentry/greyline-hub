@@ -297,11 +297,6 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
     private var blankSnapshots = 0
     private var config = ClientConfig.fallback
     private var sheet: NSWindow?
-    private var primaryField: NSTextField?
-    private var secondaryField: NSTextField?
-    private var directoryField: NSTextField?
-    private var portField: NSTextField?
-    private var launchCheckbox: NSButton?
     private var webkitCheckbox: NSButton?
     private let nativeBoard = NativeDashboard()
     private var useNative = true
@@ -500,11 +495,6 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
     override var configureSheet: NSWindow? {
         if sheet == nil { sheet = buildSheet() }
         let current = loadConfig()
-        primaryField?.stringValue = current.primaryURL
-        secondaryField?.stringValue = current.secondaryURL
-        directoryField?.stringValue = current.workingDirectory
-        portField?.stringValue = String(current.port)
-        launchCheckbox?.state = current.localServerEnabled ? .on : .off
         webkitCheckbox?.state = current.renderer == "webkit" ? .on : .off
         return sheet
     }
@@ -1175,7 +1165,7 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
 
     private func buildSheet() -> NSWindow {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 300),
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 210),
             styleMask: [.titled],
             backing: .buffered,
             defer: true
@@ -1183,43 +1173,22 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
         window.title = "Greyline Hub"
         guard let content = window.contentView else { return window }
 
-        func label(_ text: String, _ frame: NSRect) {
-            let field = NSTextField(labelWithString: text)
-            field.frame = frame
-            field.textColor = .secondaryLabelColor
-            content.addSubview(field)
-        }
-        func input(_ frame: NSRect) -> NSTextField {
-            let field = NSTextField(frame: frame)
-            content.addSubview(field)
-            return field
-        }
-
-        label("Primary URL. The shack page ends in /. /map/ hides space weather.", NSRect(x: 20, y: 250, width: 520, height: 18))
-        primaryField = input(NSRect(x: 20, y: 224, width: 520, height: 24))
-        label("Secondary URL on this Mac, used when the home server is down", NSRect(x: 20, y: 196, width: 520, height: 18))
-        secondaryField = input(NSRect(x: 20, y: 170, width: 520, height: 24))
-        label("Greyline Hub folder, used only if the secondary URL is down", NSRect(x: 20, y: 142, width: 400, height: 18))
-        directoryField = input(NSRect(x: 20, y: 116, width: 420, height: 24))
-        label("Port", NSRect(x: 450, y: 142, width: 80, height: 18))
-        portField = input(NSRect(x: 450, y: 116, width: 90, height: 24))
-
-        let checkbox = NSButton(checkboxWithTitle: "Start the local Python server when localhost is down", target: nil, action: nil)
-        checkbox.frame = NSRect(x: 20, y: 78, width: 460, height: 22)
-        content.addSubview(checkbox)
-        launchCheckbox = checkbox
+        let note = NSTextField(wrappingLabelWithString: "Station, panels, presets, and publish folders are set in the configuration app, not here. Open the Greyline Hub menu-bar app, or http://127.0.0.1:8754/config/ on this Mac. Screen Saver options often will not reopen until System Settings is quit.")
+        note.frame = NSRect(x: 20, y: 88, width: 480, height: 88)
+        note.textColor = .labelColor
+        content.addSubview(note)
 
         let webkit = NSButton(checkboxWithTitle: "Use WebKit. Leave this off — that view goes blank on macOS 26 and 27.", target: nil, action: nil)
-        webkit.frame = NSRect(x: 20, y: 48, width: 520, height: 22)
+        webkit.frame = NSRect(x: 18, y: 56, width: 480, height: 22)
         content.addSubview(webkit)
         webkitCheckbox = webkit
 
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelSheet))
-        cancel.frame = NSRect(x: 350, y: 12, width: 90, height: 28)
+        cancel.frame = NSRect(x: 310, y: 16, width: 90, height: 28)
         cancel.bezelStyle = .rounded
         content.addSubview(cancel)
         let save = NSButton(title: "Save", target: self, action: #selector(saveSheet))
-        save.frame = NSRect(x: 448, y: 12, width: 90, height: 28)
+        save.frame = NSRect(x: 408, y: 16, width: 90, height: 28)
         save.bezelStyle = .rounded
         save.keyEquivalent = "\r"
         content.addSubview(save)
@@ -1230,13 +1199,6 @@ final class GreylineHubView: ScreenSaverView, WKNavigationDelegate {
 
     @objc private func saveSheet() {
         var next = loadConfig()
-        next.primaryURL = primaryField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? next.primaryURL
-        next.secondaryURL = secondaryField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? next.secondaryURL
-        next.workingDirectory = directoryField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if let port = Int(portField?.stringValue ?? ""), (0...65535).contains(port) {
-            next.port = port
-        }
-        next.localServerEnabled = launchCheckbox?.state == .on
         next.renderer = webkitCheckbox?.state == .on ? "webkit" : "native"
         saveConfig(next)
         config = next

@@ -62,12 +62,38 @@ blank.
 
 Open System Settings → Wallpaper → Screen Saver (on macOS 26 and 27 the
 screen saver list lives inside Wallpaper) and choose Greyline Hub. This build
-is version 0.1.7 (bundle version 8). The footer on screen says `Greyline Hub 0.1.7 (8) · native`. `./build.sh` needs Xcode or the Command
+is version 0.1.8 (bundle version 9). The footer on screen says `Greyline Hub 0.1.8 (9) · native`. `./build.sh` needs Xcode or the Command
 Line Tools. The deployment target is macOS 14, so the same binary runs on
 Sonoma and later.
 
-If the Options button does nothing, quit System Settings and open it again.
-That is a macOS 26 bug in the screen saver UI, not in this bundle.
+Screen Saver options are only the WebKit checkbox, plus a note. Station,
+panels, presets, filters, the port, and publish folders are edited at
+`http://127.0.0.1:8754/config/` (use the port in `config.json` if you changed
+it). Options often will not reopen until System Settings is quit. That is a
+macOS 26 bug in the screen saver UI.
+
+## Menu-bar app
+
+`build-menu.sh` compiles a small status-item app with the Command Line Tools
+and copies it to `~/Applications/Greyline Hub.app`. It shows whether the
+server is answering, opens the configuration page, starts, stops, or restarts
+the `com.greylinehub.server` LaunchAgent, and opens the log.
+
+```bash
+cd clients/macos
+./build-menu.sh
+open "$HOME/Applications/Greyline Hub.app"
+```
+
+The menu title is **GL**. Reinstall the LaunchAgent after this update so it
+stops forcing `--port` and `--publish`. The server then follows `config.json`,
+and on macOS it still publishes the saver copy to
+`~/Library/Screen Savers/GreylineHub-site`. Homebrew Python is preferred
+(`/opt/homebrew/bin/python3`, including 3.14):
+
+```bash
+./install-local-server.sh /path/to/greyline-hub
+```
 
 ## If the screen goes black
 
@@ -80,7 +106,7 @@ the current time. The published JSON supplies the station, space weather
 If that file is missing, the clocks, the Florida station, and the greyline
 still draw, and the footer says the site was not found.
 
-The footer should read `Greyline Hub 0.1.7 (8) · native`. If it does not, the
+The footer should read `Greyline Hub 0.1.8 (9) · native`. If it does not, the
 running host is still an older bundle. Check `/Library/Screen Savers` as well
 as your home folder: macOS loads the system-wide saver first. `legacyScreenSaver`
 keeps the previous binary mapped until that process exits. Quit System Settings

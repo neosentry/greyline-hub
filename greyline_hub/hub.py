@@ -11,12 +11,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from greyline_hub.cache import FeedCache
-from greyline_hub.config import ConfigError, load_config
+from greyline_hub.config import ConfigError, enabled_publish_directories, load_config
+from greyline_hub.config_api import ConfigHooks, apply_form, public_document, read_raw, save_config_file, writable_config_path
 from greyline_hub.cty import load_cty
 from greyline_hub.feeds import TelnetSpots, collect_bands, collect_dx, collect_space_weather
 from greyline_hub.paths import CTY_PATH, ROOT
 from greyline_hub.server import HubServer
 from greyline_hub.site import PublishError, Site
+from greyline_hub.layout import layout_document
 from greyline_hub.status import build_status
 
 log = logging.getLogger("greyline")
@@ -67,6 +69,7 @@ def _log_urls(cfg: dict, port: int | None) -> None:
             path = base + ("/" if not page["slug"] else f"/{page['slug']}/")
             log.info("  page %-12s http://%s:%s%s", page["title"], shown, port, path)
         log.info("  page index      http://%s:%s%s/pages/", shown, port, base)
+        log.info("  configuration   http://127.0.0.1:%s%s/config/", port, base)
     if cfg["publish"]["enabled"]:
         folder = cfg["publish"]["directory"]
         log.info("publishing files into %s", folder)
@@ -91,16 +94,15 @@ class Service:
         self.stop = threading.Event()
         self.cache = FeedCache(runtime_dir(cfg) / "cache.json")
         self.countries = load_cty(CTY_PATH)
-        publish = None
-        if cfg["publish"]["enabled"]:
-            publish = Path(cfg["publish"]["directory"]).expanduser()
-        extras = screensaver_publish_dirs()
-        self.site = Site(runtime_dir(cfg) / "site", publish, extras)
+        self.site = Site(runtime_dir(cfg) / "site", None, self._publish_dirs(cfg))
         for folder in self.site.publish_directories:
-            if publish is None or folder != publish:
-                log.info("also publishing for the screen saver into %s", folder)
+            log.info("publishing into %s", folder)
         self.server: HubServer | None = None
         self._telnet: TelnetSpots | None = None
+        self._reload_lock = threading.Lock()
+
+    def _publish_dirs(self, cfg: dict) -> list[Path]:
+        return enabled_publish_directories(cfg) + screensaver_publish_dirs()
 
     def start_telnet(self, cfg: dict) -> None:
         feeds = cfg["feeds"]
@@ -118,6 +120,10 @@ class Service:
         self._telnet.start()
 
     def reload(self) -> None:
+        with self._reload_lock:
+            self._reload()
+
+    def _reload(self) -> None:
         if not self.config_path.is_file():
             return
         try:
@@ -136,14 +142,27 @@ class Service:
             log.warning("server host, port, or base path changed; restart Greyline Hub to apply it")
         publish_changed = cfg["publish"] != previous["publish"]
         if publish_changed:
-            log.warning("publish settings changed; restart Greyline Hub to apply them")
+            log.info("publish folders updated")
         self.cfg = cfg
+        runtime = self.site.directory
+        self.site = Site(runtime, None, self._publish_dirs(cfg))
         try:
-            self.site.rebuild(cfg)
+            self.site.rebuild(cfg, force=True)
         except PublishError as exc:
             log.error("%s", exc)
+        self.write_status()
         self.start_telnet(cfg)
         log.info("reloaded %s", self.config_path)
+
+    def save_from_form(self, form: dict) -> dict:
+        path = writable_config_path(self)
+        source = self.config_path if Path(self.config_path).is_file() else path
+        existing = read_raw(Path(source)) if Path(source).is_file() else {}
+        updated = apply_form(existing, form)
+        save_config_file(path, updated)
+        self.config_path = path
+        self.reload()
+        return public_document(self)
 
     def refresh_feeds(self, which: set[str]) -> None:
         cfg = self.cfg
@@ -174,7 +193,7 @@ class Service:
     def write_status(self) -> dict:
         status = build_status(self.cfg, self.cache, self.countries, datetime.now(timezone.utc))
         try:
-            self.site.write_status(status)
+            self.site.write_status(status, layout_document(self.cfg))
         except PublishError as exc:
             log.error("%s", exc)
         return status
@@ -229,6 +248,7 @@ class Service:
                 int(cfg["server"]["port"]),
                 cfg["server"]["base_path"],
                 self.site.directory,
+                ConfigHooks(self),
             )
         _log_urls(cfg, self.server.port if self.server else None)
         if not cfg["server"]["enabled"]:

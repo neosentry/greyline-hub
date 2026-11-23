@@ -185,14 +185,17 @@ class Site:
 
                 logging.getLogger("greyline").error("skipping publish to %s: %s", directory, exc)
 
-    def write_status(self, status: dict) -> None:
+    def write_status(self, status: dict, layout: dict | None = None) -> None:
         body = json.dumps(status, separators=(",", ":")).encode("utf-8")
         health = json.dumps(
             {"ok": True, "service": "greyline-hub", "time": status.get("server_time")}
         ).encode("utf-8")
+        layout_body = None if layout is None else json.dumps(layout, indent=2).encode("utf-8") + b"\n"
         for root in [self.directory, *self.publish_directories]:
             try:
                 _atomic_write(root / "data" / "status.json", body)
+                if layout_body is not None:
+                    _atomic_write(root / "data" / "layout.json", layout_body)
                 _atomic_write(root / "health.json", health)
             except OSError as exc:
                 import logging

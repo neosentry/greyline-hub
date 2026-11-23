@@ -9,13 +9,15 @@ import Darwin
 /// weather, bands, and spots with Core Graphics.
 
 final class NativeDashboard {
-    var version = "0.1.7 (8)"
+    var version = "0.1.8 (9)"
     private var mapOnly = false
+    private var preset = "shack"
     private var data = DashboardData.fallback
     private var land: LandMap?
     private var siteNote = "Looking for ~/Library/Screen Savers/GreylineHub-site"
     private var loadedStatus = false
     private var statusStamp: Date?
+    private var layoutStamp: Date?
     private var landStamp: Date?
     private var lastReload = Date.distantPast
     private var loggedDraw = false
@@ -121,8 +123,10 @@ final class NativeDashboard {
 
     private func loadStatus(_ root: URL) {
         let url = root.appendingPathComponent("data/status.json")
+        let layoutURL = root.appendingPathComponent("data/layout.json")
         let stamp = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-        if loadedStatus, stamp == statusStamp { return }
+        let layoutTime = (try? layoutURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+        if loadedStatus, stamp == statusStamp, layoutTime == layoutStamp { return }
         guard let raw = try? Data(contentsOf: url),
               let object = try? JSONSerialization.jsonObject(with: raw) as? [String: Any] else {
             siteNote = "Waiting for \(url.path)"
@@ -130,12 +134,49 @@ final class NativeDashboard {
             return
         }
         data = DashboardData(json: object, mapOnly: mapOnly)
+        if let layoutRaw = try? Data(contentsOf: layoutURL),
+           let layout = try? JSONSerialization.jsonObject(with: layoutRaw) as? [String: Any] {
+            applyLayout(layout)
+        }
         loadedStatus = true
         statusStamp = stamp
+        layoutStamp = layoutTime
         shadeKey = ""
         let call = data.callsign
         SaverLog.write("native: status \(call) \(data.grid) spots=\(data.spots.count) bands=\(data.bands.count)")
         siteNote = "\(call) · \(url.deletingLastPathComponent().lastPathComponent)"
+    }
+
+    /// layout.json is the configuration app's view of panels, preset, and filters.
+    private func applyLayout(_ layout: [String: Any]) {
+        if let name = layout["preset"] as? String, !name.isEmpty {
+            preset = name
+        }
+        if let station = layout["station"] as? [String: Any] {
+            data.callsign = text(station["callsign"], fallback: data.callsign)
+            data.grid = text(station["grid"], fallback: data.grid)
+            data.timezone = text(station["timezone"], fallback: data.timezone)
+            data.lat = number(station["lat"]) ?? data.lat
+            data.lon = number(station["lon"]) ?? data.lon
+        }
+        if let names = layout["panels"] as? [String], !names.isEmpty {
+            data.panels = Set(names)
+        }
+        if let rows = number(layout["dx_rows"]) {
+            data.dxRows = max(1, Int(rows))
+        }
+        guard let filter = layout["dx_filter"] as? [String: Any] else { return }
+        let bands = Set((filter["bands"] as? [String] ?? []).map { $0.lowercased() })
+        let modes = Set((filter["modes"] as? [String] ?? []).map { $0.uppercased() })
+        if let cap = number(filter["max_count"]) {
+            data.dxRows = min(data.dxRows, max(1, Int(cap)))
+        }
+        data.spots = data.spots.filter { spot in
+            if !bands.isEmpty && !bands.contains(spot.band.lowercased()) { return false }
+            if !modes.isEmpty && !modes.contains(spot.mode.uppercased()) { return false }
+            return true
+        }
+        data.spots = Array(data.spots.prefix(data.dxRows))
     }
 
     // MARK: - Layout
@@ -144,7 +185,10 @@ final class NativeDashboard {
         let headerH: CGFloat = min(78, rect.height * 0.11)
         let footerH: CGFloat = 22
         let showDX = data.panels.contains("dx_spots")
-        let dxH: CGFloat = showDX ? min(230, max(120, rect.height * 0.26)) : 0
+        let dxCap: CGFloat = preset == "spots-heavy" ? 460 : (preset == "map-heavy" ? 150 : 230)
+        let dxShare: CGFloat = preset == "spots-heavy" ? 0.42 : (preset == "map-heavy" ? 0.16 : 0.26)
+        let dxFloor: CGFloat = preset == "map-heavy" ? 72 : 120
+        let dxH: CGFloat = showDX ? min(dxCap, max(dxFloor, rect.height * dxShare)) : 0
         let header = NSRect(x: rect.minX, y: rect.maxY - headerH, width: rect.width, height: headerH)
         let footer = NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: footerH)
         let mid = NSRect(x: rect.minX, y: footer.maxY + 8, width: rect.width, height: header.minY - footer.maxY - 16)

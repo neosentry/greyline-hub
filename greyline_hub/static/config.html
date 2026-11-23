@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Greyline Hub configuration</title>
+<style>
+  :root { color-scheme: dark; --bg:#080a0d; --ink:#e6edf3; --dim:#8b9bab; --line:rgba(228,196,150,.2);
+    --amber:#e4b15a; --panel:#10161d; --good:#8fceaa; --poor:#e08b7a; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.4 "Avenir Next","Segoe UI",sans-serif; }
+  main { max-width: 920px; margin: 0 auto; padding: 28px 20px 64px; }
+  h1 { font-size: 28px; font-weight: 600; margin: 0 0 4px; }
+  h1 span { color: var(--amber); }
+  .lead { color: var(--dim); margin: 0 0 22px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 16px 8px; margin: 0 0 14px; }
+  h2 { margin: 0 0 12px; font-size: 13px; letter-spacing: .08em; color: var(--amber); }
+  label { display: block; color: var(--dim); font-size: 12px; margin-bottom: 10px; }
+  input[type=text], input[type=number], select { width: 100%; margin-top: 4px; background: #0c1218; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font: inherit; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+  .checks { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-bottom: 10px; }
+  .checks label { color: var(--ink); font-size: 14px; }
+  .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .row input[type=text] { flex: 1; }
+  button, .link { background: #1a242f; color: var(--ink); border: 1px solid var(--line); border-radius: 6px;
+    padding: 8px 12px; font: inherit; cursor: pointer; }
+  button.primary { background: #3a2d16; color: var(--amber); }
+  #bar { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
+  #msg { min-height: 1.2em; color: var(--dim); }
+  #msg.bad { color: var(--poor); }
+  #msg.ok { color: var(--good); }
+  .hint { color: var(--dim); font-size: 13px; margin: 0 0 10px; }
+  ul.detect { list-style: none; padding: 0; margin: 0 0 8px; }
+  ul.detect li { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
+  code { color: var(--amber); }
+</style>
+</head>
+<body>
+<main>
+  <h1>GREYLINE <span>HUB</span></h1>
+  <p class="lead">Settings for this computer. The screen saver reads them from the published layout file. Saving a new port needs a restart of the server.</p>
+  <form id="form">
+    <section>
+      <h2>STATION</h2>
+      <div class="grid">
+        <label>Callsign<input name="callsign" required maxlength="16" autocomplete="off"></label>
+        <label>Grid square<input name="grid" required maxlength="8" autocomplete="off"></label>
+        <label>Timezone<input name="timezone" list="zones" required></label>
+      </div>
+      <p class="hint" id="place">Latitude and longitude come from the grid square.</p>
+      <datalist id="zones">
+        <option value="America/New_York"><option value="America/Chicago"><option value="America/Denver">
+        <option value="America/Los_Angeles"><option value="America/Phoenix"><option value="Pacific/Honolulu">
+        <option value="UTC"><option value="Europe/London"><option value="Europe/Paris"><option value="Australia/Sydney">
+      </datalist>
+    </section>
+    <section>
+      <h2>SERVER</h2>
+      <div class="grid">
+        <label>Port<input name="port" type="number" min="1" max="65535" required></label>
+        <label class="checks"><input type="checkbox" name="server_enabled"> Built-in server on</label>
+      </div>
+      <p class="hint" id="listen"></p>
+    </section>
+    <section>
+      <h2>PUBLISH</h2>
+      <p class="hint">A folder an existing web server already serves. Use a dedicated directory such as <code>…/greyline</code>. The screen-saver copy is always written on macOS and is not listed here.</p>
+      <div id="targets"></div>
+      <button type="button" id="add-target">Add folder</button>
+      <ul class="detect" id="detect"></ul>
+      <p class="hint" id="detect-note">Looking for nginx, Apache, Caddy, or httpd on this machine.</p>
+    </section>
+    <section>
+      <h2>LAYOUT</h2>
+      <p class="hint">Presets pick the panels. The region grid is saved for a later layout editor; the saver uses the preset and the panel list.</p>
+      <label>Preset
+        <select name="preset">
+          <option value="shack">Shack — map, weather, bands, spots</option>
+          <option value="map-heavy">Map-heavy</option>
+          <option value="spots-heavy">Spots-heavy</option>
+          <option value="custom">Custom</option>
+        </select>
+      </label>
+      <div class="checks" id="panels"></div>
+    </section>
+    <section>
+      <h2>DX SPOTS</h2>
+      <label>Maximum shown<input name="max_count" type="number" min="1" max="60" required></label>
+      <div class="checks" id="bands"></div>
+      <div class="checks" id="modes"></div>
+      <p class="hint">Leave every box off to keep all bands and modes. A checked box is a filter.</p>
+    </section>
+    <section>
+      <h2>ACCESS</h2>
+      <label class="checks"><input type="checkbox" name="lan_writes"> Allow saving settings from other computers on this network</label>
+      <p class="hint">Off by default. The dashboard can still be viewed on the LAN. This page itself stays on localhost until the box is checked.</p>
+    </section>
+    <div id="bar">
+      <button class="primary" type="submit">Save</button>
+      <a class="link" id="dash" href="/">Open dashboard</a>
+      <span id="msg"></span>
+    </div>
+  </form>
+</main>
+<script>
+const PANELS = [
+  ["clock", "Clocks"],
+  ["map", "Map"],
+  ["space_weather", "Space weather"],
+  ["bands", "Band conditions"],
+  ["dx_spots", "DX spots"],
+];
+const PRESET_PANELS = {
+  shack: ["clock", "map", "space_weather", "bands", "dx_spots"],
+  "map-heavy": ["clock", "map", "dx_spots"],
+  "spots-heavy": ["clock", "map", "space_weather", "dx_spots"],
+};
+const PRESET_COUNT = { shack: 10, "map-heavy": 4, "spots-heavy": 18 };
+let catalog = { bands: [], modes: [] };
+let targets = [];
+
+function el(tag, attrs, text) {
+  const node = document.createElement(tag);
+  Object.entries(attrs || {}).forEach(([key, value]) => {
+    if (key === "class") node.className = value;
+    else node.setAttribute(key, value);
+  });
+  if (text != null) node.textContent = text;
+  return node;
+}
+
+function checks(root, name, items, selected) {
+  root.replaceChildren();
+  items.forEach((item) => {
+    const id = name + "-" + item;
+    const label = el("label");
+    const box = el("input", { type: "checkbox", name: name, value: item, id });
+    box.checked = selected.includes(item);
+    label.append(box, document.createTextNode(" " + item.replace("space_weather", "Space weather")));
+    root.append(label);
+  });
+}
+
+function panelChecks(selected) {
+  const root = document.getElementById("panels");
+  root.replaceChildren();
+  PANELS.forEach(([id, title]) => {
+    const label = el("label");
+    const box = el("input", { type: "checkbox", name: "panel", value: id });
+    box.checked = selected.includes(id);
+    box.addEventListener("change", () => { document.querySelector("[name=preset]").value = "custom"; });
+    label.append(box, document.createTextNode(" " + title));
+    root.append(label);
+  });
+}
+
+function renderTargets() {
+  const root = document.getElementById("targets");
+  root.replaceChildren();
+  targets.forEach((target, index) => {
+    const row = el("div", { class: "row" });
+    const on = el("input", { type: "checkbox" });
+    on.checked = !!target.enabled;
+    on.addEventListener("change", () => { targets[index].enabled = on.checked; });
+    const field = el("input", { type: "text", value: target.directory, placeholder: "/var/www/html/greyline" });
+    field.addEventListener("input", () => { targets[index].directory = field.value; });
+    const remove = el("button", { type: "button" }, "Remove");
+    remove.addEventListener("click", () => { targets.splice(index, 1); renderTargets(); });
+    row.append(on, field, remove);
+    root.append(row);
+  });
+}
+
+function say(text, kind) {
+  const node = document.getElementById("msg");
+  node.textContent = text || "";
+  node.className = kind || "";
+}
+
+function fill(doc) {
+  catalog = doc.catalog;
+  const station = doc.station;
+  document.querySelector("[name=callsign]").value = station.callsign;
+  document.querySelector("[name=grid]").value = station.grid;
+  document.querySelector("[name=timezone]").value = station.timezone;
+  document.getElementById("place").textContent =
+    station.lat + "°, " + station.lon + "°  ·  " + station.grid;
+  document.querySelector("[name=port]").value = doc.server.port;
+  document.querySelector("[name=server_enabled]").checked = !!doc.server.enabled;
+  const listen = document.getElementById("listen");
+  listen.textContent = doc.server.restart_required
+    ? "This page is being served on port " + doc.server.listening_port + ". Restart the server to use port " + doc.server.port + "."
+    : (doc.server.listening_port ? "Listening on port " + doc.server.listening_port + "." : "The built-in server is not listening.");
+  targets = (doc.publish.targets || []).map((item) => ({ directory: item.directory, enabled: !!item.enabled }));
+  renderTargets();
+  document.querySelector("[name=preset]").value = doc.layout.preset || "custom";
+  panelChecks(doc.layout.panels || []);
+  document.querySelector("[name=max_count]").value = doc.dx_filter.max_count;
+  checks(document.getElementById("bands"), "band", catalog.bands, doc.dx_filter.bands || []);
+  checks(document.getElementById("modes"), "mode", catalog.modes, doc.dx_filter.modes || []);
+  document.querySelector("[name=lan_writes]").checked = !!doc.lan_writes;
+}
+
+function selected(name) {
+  return Array.from(document.querySelectorAll("input[name=" + name + "]:checked")).map((node) => node.value);
+}
+
+document.querySelector("[name=preset]").addEventListener("change", (event) => {
+  const name = event.target.value;
+  if (!PRESET_PANELS[name]) return;
+  panelChecks(PRESET_PANELS[name]);
+  document.querySelector("[name=max_count]").value = PRESET_COUNT[name];
+});
+
+document.getElementById("add-target").addEventListener("click", () => {
+  targets.push({ directory: "", enabled: true });
+  renderTargets();
+});
+
+function addDetected(found) {
+  const root = document.getElementById("detect");
+  const note = document.getElementById("detect-note");
+  if (!found.length) {
+    note.textContent = "No other web server answered on the usual ports. You can still type a folder.";
+    return;
+  }
+  note.textContent = "A server is already running. Publish into a greyline folder inside its document root, or keep using only the built-in port.";
+  found.forEach((item) => {
+    const li = el("li");
+    const text = el("span", {}, item.name + " on " + item.scheme + "://" + item.port + (item.banner ? " (" + item.banner + ")" : ""));
+    li.append(text);
+    (item.suggested || []).forEach((folder) => {
+      const button = el("button", { type: "button" }, "Use " + folder);
+      button.addEventListener("click", () => {
+        if (!targets.some((target) => target.directory === folder)) {
+          targets.push({ directory: folder, enabled: true });
+          renderTargets();
+        }
+      });
+      li.append(button);
+    });
+    root.append(li);
+  });
+}
+
+document.getElementById("form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  say("Saving…");
+  const body = {
+    station: {
+      callsign: document.querySelector("[name=callsign]").value,
+      grid: document.querySelector("[name=grid]").value,
+      timezone: document.querySelector("[name=timezone]").value,
+    },
+    server: {
+      port: Number(document.querySelector("[name=port]").value),
+      enabled: document.querySelector("[name=server_enabled]").checked,
+    },
+    publish: targets.filter((target) => target.directory.trim()),
+    layout: {
+      preset: document.querySelector("[name=preset]").value,
+      panels: selected("panel"),
+      dx_rows: Number(document.querySelector("[name=max_count]").value),
+    },
+    dx_filter: {
+      bands: selected("band"),
+      modes: selected("mode"),
+      max_count: Number(document.querySelector("[name=max_count]").value),
+    },
+    lan_writes: document.querySelector("[name=lan_writes]").checked,
+  };
+  try {
+    const response = await fetch(apiRoot + "api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) throw new Error(payload.error || "save failed");
+    fill(payload.config);
+    say(payload.message || "Saved.", "ok");
+  } catch (err) {
+    say(err.message || String(err), "bad");
+  }
+});
+
+const apiRoot = location.pathname.replace(/config\/?$/, "");
+fetch(apiRoot + "api/config").then((response) => response.json()).then((payload) => {
+  if (!payload.ok) throw new Error(payload.error || "config failed");
+  fill(payload.config);
+}).catch((err) => say(err.message, "bad"));
+
+fetch(apiRoot + "api/config/servers").then((response) => response.json()).then((payload) => {
+  if (payload.ok) addDetected(payload.servers || []);
+}).catch(() => {
+  document.getElementById("detect-note").textContent = "Could not scan local ports.";
+});
+</script>
+</body>
+</html>

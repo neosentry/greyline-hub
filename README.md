@@ -28,6 +28,16 @@ python3 greyline-hub --port 9000 --host 127.0.0.1
 
 `server.base_path` mounts the site under a prefix (`/greyline`) when a reverse proxy forwards the full path. Leave it empty when clients open `http://host:8754/` directly, or when the proxy strips the prefix.
 
+## Configuration page
+
+While the server is running, open `http://127.0.0.1:8754/config/` on the same computer. That page sets the callsign, grid square (latitude and longitude are derived), timezone, port, publish folders, panel toggles, a layout preset, and DX band/mode filters. It writes `config.json` in place of the old file, then the server reloads. A port change does not move the listening socket until the process starts again.
+
+The page also looks for nginx, Apache, Caddy, or another httpd already listening on this machine (ports 80, 443, 8080, and a few others, including a Homebrew nginx document root). You can publish into a `greyline` folder there instead of the built-in server, or as well as it. Use a dedicated folder. An existing unrelated `index.html` is left alone.
+
+Saving is accepted from localhost only, until `config_api.lan_writes` is turned on. The dashboard itself can still be opened from other computers on the LAN. The screen saver does not use this page. It reads `data/layout.json`, written next to `data/status.json`, including into `~/Library/Screen Savers/GreylineHub-site` on macOS.
+
+`layout.regions` is a 12-column grid (row, column, spans). The current saver uses the preset name and the panel list. A later editor can move those regions without a new file format.
+
 ## Use the web server you already have
 
 You do not have to give Greyline Hub a port. It can write the pages into a folder and let nginx, Caddy, Apache, or lighttpd serve them.

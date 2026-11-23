@@ -1,8 +1,9 @@
 # Screensaver clients
 
-A client does not collect space weather or draw the map. It opens one page URL
-that Greyline Hub already published. The page (which panels, how many spots,
-the station, the greyline) comes from `config.json` on the server.
+The macOS screen saver draws the dashboard itself from the JSON the server
+publishes. Other clients can still open one page URL. Which panels, how many
+spots, and the station come from `config.json`, edited at `/config/` on the
+server while it is running.
 
 ## What every client does
 

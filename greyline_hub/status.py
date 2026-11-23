@@ -158,7 +158,9 @@ def build_status(cfg: dict, cache: FeedCache, countries: CountryFile | None, now
         seen.add(key)
         merged.append(locate_spot(spot, countries))
     merged.sort(key=lambda item: item.get("time") or "", reverse=True)
-    merged = merged[: int(feeds["dx_max_spots"])]
+    from greyline_hub.layout import filter_spots
+
+    merged = filter_spots(merged, cfg.get("dx_filter"), int(feeds["dx_max_spots"]))
     sources = []
     if http_spots:
         sources.append("DX Summit")

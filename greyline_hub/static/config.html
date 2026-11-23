@@ -93,6 +93,23 @@
       <p class="hint">Leave every box off to keep all bands and modes. A checked box is a filter.</p>
     </section>
     <section>
+      <h2>LINUX SCREEN</h2>
+      <p class="hint">On Ubuntu GNOME with Wayland the saver asks Mutter how long the session has been idle, then opens a fullscreen GTK 4 / WebKitGTK 6 window. Set GNOME’s Blank Screen longer than this, or turn Blank Screen off, or the black overlay covers the dashboard. X11 can use xprintidle instead. Restart the greyline-hub-idle service after saving.</p>
+      <div class="grid">
+        <label>Idle minutes<input name="idle_minutes" type="number" min="1" max="240" required></label>
+        <label>Display<input name="linux_display" placeholder="empty uses this session"></label>
+        <label>Renderer
+          <select name="linux_renderer">
+            <option value="auto">Auto (WebKitGTK 6, then a browser)</option>
+            <option value="webkit">WebKitGTK</option>
+            <option value="chromium">Chromium kiosk</option>
+            <option value="firefox">Firefox kiosk</option>
+          </select>
+        </label>
+        <label>Page<input name="linux_page" placeholder="/"></label>
+      </div>
+    </section>
+    <section>
       <h2>ACCESS</h2>
       <label class="checks"><input type="checkbox" name="lan_writes"> Allow saving settings from other computers on this network</label>
       <p class="hint">Off by default. The dashboard can still be viewed on the LAN. This page itself stays on localhost until the box is checked.</p>
@@ -201,6 +218,15 @@ function fill(doc) {
   checks(document.getElementById("bands"), "band", catalog.bands, doc.dx_filter.bands || []);
   checks(document.getElementById("modes"), "mode", catalog.modes, doc.dx_filter.modes || []);
   document.querySelector("[name=lan_writes]").checked = !!doc.lan_writes;
+  const linux = doc.linux || {};
+  const idle = document.querySelector("[name=idle_minutes]");
+  if (idle) idle.value = linux.idle_minutes || 5;
+  const display = document.querySelector("[name=linux_display]");
+  if (display) display.value = linux.display || "";
+  const renderer = document.querySelector("[name=linux_renderer]");
+  if (renderer) renderer.value = linux.renderer || "auto";
+  const page = document.querySelector("[name=linux_page]");
+  if (page) page.value = linux.page || "/";
 }
 
 function selected(name) {
@@ -270,6 +296,12 @@ document.getElementById("form").addEventListener("submit", async (event) => {
       max_count: Number(document.querySelector("[name=max_count]").value),
     },
     lan_writes: document.querySelector("[name=lan_writes]").checked,
+    linux: {
+      idle_minutes: Number(document.querySelector("[name=idle_minutes]").value || 5),
+      display: document.querySelector("[name=linux_display]").value,
+      renderer: document.querySelector("[name=linux_renderer]").value,
+      page: document.querySelector("[name=linux_page]").value || "/",
+    },
   };
   try {
     const response = await fetch(apiRoot + "api/config", {

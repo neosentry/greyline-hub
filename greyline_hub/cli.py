@@ -52,12 +52,23 @@ def apply_overrides(cfg: dict, args: argparse.Namespace) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if raw and raw[0] in {"idle", "kiosk", "tray"}:
+        command = raw[0]
+        rest = raw[1:]
+        if command == "idle":
+            from greyline_hub.linux_idle import main as run
+        elif command == "kiosk":
+            from greyline_hub.linux_kiosk import main as run
+        else:
+            from greyline_hub.linux_tray import main as run
+        return run(rest)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
-    args = parse_args(argv)
+    args = parse_args(None if argv is None else raw)
     try:
         cfg, path, used_example = discover_config(args.config)
         cfg = apply_overrides(cfg, args)

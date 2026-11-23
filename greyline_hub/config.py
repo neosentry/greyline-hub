@@ -106,6 +106,12 @@ DEFAULTS: dict = {
     "config_api": {
         "lan_writes": False,
     },
+    "linux": {
+        "idle_minutes": 5,
+        "display": "",
+        "renderer": "auto",
+        "page": "/",
+    },
 }
 
 
@@ -386,6 +392,35 @@ def _normalize_dx_filter(cfg: dict) -> None:
     }
 
 
+def _normalize_linux(cfg: dict) -> None:
+    raw = cfg.get("linux") or {}
+    if not isinstance(raw, dict):
+        raise ConfigError("linux must be an object")
+    try:
+        minutes = int(raw.get("idle_minutes", 5))
+    except (TypeError, ValueError) as exc:
+        raise ConfigError("linux.idle_minutes must be a number") from exc
+    if not 1 <= minutes <= 240:
+        raise ConfigError("linux.idle_minutes must be from 1 to 240")
+    renderer = str(raw.get("renderer") or "auto").strip().lower()
+    if renderer not in {"auto", "webkit", "chromium", "firefox"}:
+        raise ConfigError("linux.renderer must be auto, webkit, chromium, or firefox")
+    display = str(raw.get("display") or "").strip()
+    if len(display) > 64 or any(ch in display for ch in "\n\r\t"):
+        raise ConfigError("linux.display must be a short display name, such as wayland-0 or :0")
+    page = str(raw.get("page") or "/").strip() or "/"
+    if not page.startswith("/"):
+        page = "/" + page
+    if ".." in page or "\\" in page or any(ch in page for ch in "\n\r\t "):
+        raise ConfigError("linux.page must be a path such as / or /map/")
+    cfg["linux"] = {
+        "idle_minutes": minutes,
+        "display": display,
+        "renderer": renderer,
+        "page": page,
+    }
+
+
 def _normalize_config_api(cfg: dict) -> None:
     raw = cfg.get("config_api") or {}
     if not isinstance(raw, dict):
@@ -414,6 +449,7 @@ def prepare(raw: dict) -> dict:
     _normalize_publish(cfg)
     _normalize_dx_filter(cfg)
     _normalize_config_api(cfg)
+    _normalize_linux(cfg)
     if has_layout:
         from greyline_hub.layout import apply_layout
 

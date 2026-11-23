@@ -93,5 +93,14 @@
     "telnet_host": "dxc.nc7j.com",
     "telnet_port": 7373,
     "telnet_login": ""
+  },
+
+  // Ubuntu / GNOME. The idle service reads this. Blank Screen in Settings
+  // must be longer than idle_minutes, or off, so GNOME does not cover the window.
+  "linux": {
+    "idle_minutes": 5,
+    "display": "",
+    "renderer": "auto",
+    "page": "/"
   }
 }

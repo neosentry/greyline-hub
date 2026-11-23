@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<screensaver name="greyline-hub" _label="Greyline Hub">
+  <command arg="greyline-hub-xscreensaver --root"/>
+  <_description>
+    Amateur-radio dashboard. On GNOME Wayland use the greyline-hub-idle
+    service instead. This entry is for X11 sessions running XScreenSaver.
+    XScreenSaver starts the command and kills it when there is input.
+  </_description>
+</screensaver>

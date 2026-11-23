@@ -38,6 +38,8 @@ Saving is accepted from localhost only, until `config_api.lan_writes` is turned 
 
 `layout.regions` is a 12-column grid (row, column, spans). The current saver uses the preset name and the panel list. A later editor can move those regions without a new file format.
 
+Ubuntu 26.04 with GNOME on Wayland uses a systemd user service and an idle watcher. Steps are in `clients/linux/README.md`. The same `/config/` page sets the idle time and the renderer.
+
 ## Use the web server you already have
 
 You do not have to give Greyline Hub a port. It can write the pages into a folder and let nginx, Caddy, Apache, or lighttpd serve them.

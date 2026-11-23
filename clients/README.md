@@ -33,7 +33,7 @@ Add or edit pages in the server config; clients do not get a new build.
 | Path | Role |
 | --- | --- |
 | `macos/` | Swift screen saver, build script, LaunchAgent installer |
+| `linux/` | systemd user service, GNOME/Wayland idle screen, tray launcher |
 | later `windows/` | A small WebView2 `.scr` that follows the steps above |
-| later `ubuntu/` | A WebKitGTK or kiosk-browser saver that follows the steps above |
 
-macOS build and install steps are in `macos/README.md`.
+macOS steps are in `macos/README.md`. Ubuntu steps are in `linux/README.md`.

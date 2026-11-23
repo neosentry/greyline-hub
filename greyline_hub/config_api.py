@@ -148,6 +148,8 @@ def apply_form(existing: dict, form: dict) -> dict:
     if not isinstance(raw["config_api"], dict):
         raw["config_api"] = {}
     raw["config_api"]["lan_writes"] = bool(form.get("lan_writes"))
+    if isinstance(form.get("linux"), dict):
+        raw["linux"] = form["linux"]
     prepare(raw)
     return raw
 
@@ -188,6 +190,7 @@ def public_document(service) -> dict:
         },
         "dx_filter": dict(cfg.get("dx_filter") or {}),
         "lan_writes": bool(cfg.get("config_api", {}).get("lan_writes")),
+        "linux": dict(cfg.get("linux") or {}),
         "config_path": str(service.config_path),
         "catalog": {"bands": list(DX_BANDS), "modes": list(DX_MODES)},
     }
